@@ -125,21 +125,94 @@ export function statusLine(state = {}, width = 80) {
   return color(ORANGE, plain, width);
 }
 
-// The dynamic region below the status line. Placeholder for v1; Task 7 replaces
-// this with draft boxes / queue / knock+admit prompts.
+// The dynamic region below the status line. Placeholder when the caller hasn't
+// composed anything yet; otherwise `state.lines` carries the real draft boxes /
+// queue / knock+admit prompts built by the helpers below.
 function placeholderLine(state = {}, width = 80) {
   const plain = state.status ?? 'drafts · queue · prompts render here';
   return color(DIM, plain, width);
 }
 
+// Pad a plain string to a visible width (truncating first if it's too wide).
+function padTo(str, width) {
+  const t = truncateToWidth(str, width);
+  return t + ' '.repeat(Math.max(0, width - stringWidth(t)));
+}
+
+/**
+ * Render one draft as its own author-tagged box (spec §draft lines: "each draft
+ * renders as its own visually separated, author-tagged box — never as stacked bare
+ * lines"). Exactly three rows; the focused box carries the `↵ sends this draft`
+ * hint. Content is single-line (embedded newlines collapse to ⏎) and truncated to
+ * the inner width so it can never wrap into Claude's rows.
+ *
+ * @param {{text:string, authors:string[]}} box
+ * @param {{cols:number, focused?:boolean}} opts
+ * @returns {[string,string,string]}
+ */
+export function draftBox(box, { cols = 80, focused = false } = {}) {
+  const W = Math.max(8, cols);
+  const authors = (box.authors ?? []).join(' + ') || 'draft';
+  const hint = focused ? ' ↵ sends this draft ─' : '';
+  const left = `╭─ ${authors} `;
+  const right = `${hint}╮`;
+  const mid = Math.max(0, W - stringWidth(left) - stringWidth(right));
+  const top = truncateToWidth(left + '─'.repeat(mid) + right, W);
+
+  const oneLine = String(box.text ?? '').replace(/\n/g, ' ⏎ ');
+  const body = `│ ${padTo(oneLine, W - 4)} │`;
+  const bottom = `╰${'─'.repeat(W - 2)}╯`;
+  return [top, body, bottom];
+}
+
+/**
+ * Render the queue as a count-headed, attributed, ordered list (spec §queue). One
+ * row per item, each truncated to `cols`. Empty queue → no lines at all.
+ * @param {{author:string, text:string}[]} items
+ * @param {{cols:number}} opts
+ * @returns {string[]}
+ */
+export function queueBlock(items = [], { cols = 80 } = {}) {
+  if (!items.length) return [];
+  const lines = [truncateToWidth(`queue (${items.length}):`, cols)];
+  items.forEach((it, i) => {
+    lines.push(truncateToWidth(`  ${i + 1}. ${it.author} → ${it.text}`, cols));
+  });
+  return lines;
+}
+
+/**
+ * Format the knock/admit prompt line (spec §knock). A first-time key (seen==null)
+ * gets the warning; a returning key notes its prior name.
+ * @param {{name:string, fp:string, seen:string|boolean|null}} knock
+ * @param {{cols:number}} opts
+ * @returns {string}
+ */
+export function knockLine(knock, { cols = 80 } = {}) {
+  const fp = knock.fp ? String(knock.fp).replace(/^SHA256:/, '').slice(0, 6) + '…' : 'no key';
+  const seenNote =
+    knock.seen == null || knock.seen === false
+      ? ' · ⚠ first time seeing this key'
+      : ` · seen before as ${knock.seen}`;
+  return truncateToWidth(`🚪 "${knock.name}" knocking — key ${fp}${seenNote} — admit? (y/n)`, cols);
+}
+
 /**
  * Build exactly `bandRows` content strings (top = status line, then the dynamic
- * region, then blanks). Each is already width-clamped to `cols`.
+ * region, then blanks). Each is already width-clamped to `cols`. When the caller
+ * supplies `state.lines` (composed draft boxes / queue / prompts), those fill the
+ * dynamic region; otherwise a dim placeholder does.
  */
 function bandLines(state, cols, bandRows) {
   const lines = [statusLine(state, cols)];
+  const dynamic = Array.isArray(state.lines) ? state.lines : null;
   for (let i = 1; i < bandRows; i++) {
-    lines.push(i === 1 ? placeholderLine(state, cols) : '');
+    if (dynamic) {
+      const l = dynamic[i - 1];
+      lines.push(l != null ? truncateToWidth(String(l), cols) : '');
+    } else {
+      lines.push(i === 1 ? placeholderLine(state, cols) : '');
+    }
   }
   return lines;
 }
@@ -157,6 +230,8 @@ function bandLines(state, cols, bandRows) {
  * @param {{name:string,role:string}[]} [state.participants]
  * @param {string} [state.mode]         Claude permission mode
  * @param {string} [state.status]       placeholder text for the dynamic region
+ * @param {string[]} [state.lines]      composed dynamic lines (draft boxes/queue/prompts);
+ *                                      overrides the placeholder when present
  * @returns {string} ANSI for the band only (empty string if bandRows <= 0)
  */
 export function paint(state = {}) {

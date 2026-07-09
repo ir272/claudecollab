@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { paint, statusLine, stringWidth, truncateToWidth, ROLE_GLYPH } from './renderer.js';
+import {
+  paint,
+  statusLine,
+  stringWidth,
+  truncateToWidth,
+  ROLE_GLYPH,
+  draftBox,
+  queueBlock,
+  knockLine,
+} from './renderer.js';
 
 // ── ANSI vocabulary the band uses (must match renderer.js) ────────────────────
 const SAVE = '\x1b7';
@@ -160,4 +169,103 @@ test('ROLE_GLYPH covers every spec role', () => {
     assert.equal(typeof ROLE_GLYPH[role], 'string');
     assert.ok(ROLE_GLYPH[role].length >= 1, role);
   }
+});
+
+// ── draftBox (spec §draft lines) ────────────────────────────────────────────────
+
+test('draftBox renders a 3-line author-tagged box within its width', () => {
+  const lines = draftBox({ text: 'make the hero full-bleed', authors: ['ian', 'siddh'] }, { cols: 54, focused: true });
+  assert.equal(lines.length, 3);
+  assert.ok(lines[0].startsWith('╭'), 'top-left corner');
+  assert.ok(lines[0].endsWith('╮'), 'top-right corner');
+  assert.match(lines[0], /ian \+ siddh/, 'authors tagged, joined with +');
+  assert.match(lines[0], /↵ sends this draft/, 'focused box shows the send hint');
+  assert.match(lines[1], /make the hero full-bleed/, 'content line carries the draft text');
+  assert.ok(lines[2].startsWith('╰') && lines[2].endsWith('╯'), 'bottom corners');
+  for (const l of lines) assert.ok(stringWidth(l) <= 54, `line width ${stringWidth(l)} > 54`);
+});
+
+test('an unfocused draftBox omits the send hint', () => {
+  const [top] = draftBox({ text: 'use tailwind', authors: ['james'] }, { cols: 40, focused: false });
+  assert.doesNotMatch(top, /sends this draft/);
+  assert.match(top, /james/);
+});
+
+test('draftBox truncates overlong text to its inner width', () => {
+  const lines = draftBox({ text: 'x'.repeat(200), authors: ['ian'] }, { cols: 30, focused: false });
+  for (const l of lines) assert.ok(stringWidth(l) <= 30);
+});
+
+test('draftBox collapses newlines so a multi-line draft stays one row', () => {
+  const lines = draftBox({ text: 'line one\nline two', authors: ['ian'] }, { cols: 60, focused: false });
+  assert.equal(lines.length, 3, 'still exactly three rows');
+  assert.doesNotMatch(lines[1], /\n/);
+});
+
+// ── queueBlock (spec §queue) ────────────────────────────────────────────────────
+
+test('queueBlock renders an attributed, ordered list under a count header', () => {
+  const lines = queueBlock(
+    [
+      { author: 'james', text: 'use tailwind' },
+      { author: 'ian', text: 'make it dark' },
+    ],
+    { cols: 60 },
+  );
+  assert.match(lines[0], /queue \(2\)/);
+  assert.match(lines[1], /james/);
+  assert.match(lines[1], /use tailwind/);
+  assert.match(lines[2], /ian/);
+  assert.match(lines[2], /make it dark/);
+  for (const l of lines) assert.ok(stringWidth(l) <= 60);
+});
+
+test('queueBlock is empty for an empty queue', () => {
+  assert.deepEqual(queueBlock([], { cols: 60 }), []);
+});
+
+// ── knockLine (spec §knock) ──────────────────────────────────────────────────────
+
+test('knockLine warns on a first-time key and asks to admit', () => {
+  const line = knockLine({ name: 'siddh', fp: 'SHA256:a1b2c3d4', seen: null }, { cols: 80 });
+  assert.match(line, /siddh/);
+  assert.match(line, /first time/i);
+  assert.match(line, /admit\? \(y\/n\)/);
+  assert.ok(stringWidth(line) <= 80);
+});
+
+test('knockLine notes a returning key by its prior name', () => {
+  const line = knockLine({ name: 'siddh', fp: 'SHA256:a1b2c3d4', seen: 'siddh' }, { cols: 80 });
+  assert.match(line, /seen before as siddh/);
+});
+
+// ── paint with composed dynamic lines ─────────────────────────────────────────────
+
+test('paint fills the dynamic region from state.lines when provided', () => {
+  const out = paint({
+    cols: 40,
+    rows: 10,
+    bandRows: 3,
+    room: 'brave-otter',
+    participants: [{ name: 'ian', role: 'host' }],
+    mode: 'default',
+    lines: ['first dynamic line', 'second dynamic line'],
+  });
+  assert.match(out, /first dynamic line/);
+  assert.match(out, /second dynamic line/);
+  // three band rows: status + two dynamic lines, positioned at the bottom
+  const rowsRef = [...out.matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]));
+  assert.deepEqual(rowsRef, [8, 9, 10]);
+});
+
+test('paint truncates composed lines to the terminal width', () => {
+  const out = paint({
+    cols: 12,
+    rows: 6,
+    bandRows: 2,
+    lines: ['this line is definitely wider than twelve columns'],
+  });
+  const inner = out.replace(/^\x1b7/, '').replace(/\x1b8$/, '');
+  const content = inner.split(/\x1b\[\d+;1H\x1b\[2K/).slice(1);
+  for (const line of content) assert.ok(stringWidth(line) <= 12, `width ${stringWidth(line)} > 12`);
 });
