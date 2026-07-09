@@ -12,7 +12,9 @@ test('encode produces newline-terminated JSON in a Buffer', () => {
 test('encode/decode round-trip for every message type', () => {
   const msgs = [
     { t: 'hello', want: 'room' },
+    { t: 'reclaim', code: 'brave-otter' },
     { t: 'room', code: 'brave-otter' },
+    { t: 'gone', code: 'brave-otter' },
     { t: 'knock', id: 'g1', name: 'siddh', fp: 'a1b2c3', seen: false },
     { t: 'knock', id: 'g2', name: 'james', fp: 'd4e5f6', seen: 'james' },
     { t: 'admit', id: 'g1' },
@@ -62,10 +64,36 @@ test('Decoder accepts string chunks and skips blank lines', () => {
   assert.deepEqual(dec.push('{"t":"end"}\n'), [{ t: 'end' }]);
 });
 
+test('Decoder drops an unparseable line instead of throwing (never fatal)', () => {
+  const dec = new Decoder();
+  // A bad line followed by a valid one in the SAME chunk: the bad line is
+  // dropped, the valid line still comes through (spec: drop anything malformed).
+  assert.doesNotThrow(() => dec.push('not json\n'));
+  const dec2 = new Decoder();
+  assert.deepEqual(dec2.push('not json\n{"t":"end"}\n'), [{ t: 'end' }]);
+});
+
+test('Decoder recovers after a malformed line split across pushes', () => {
+  const dec = new Decoder();
+  assert.deepEqual(dec.push('{bad'), []); // partial, no newline yet
+  assert.deepEqual(dec.push(' json\n'), []); // completes an unparseable line → dropped
+  assert.deepEqual(dec.push('{"t":"end"}\n'), [{ t: 'end' }]); // decoder recovers
+});
+
+test('Decoder caps an unterminated flood instead of buffering unbounded', () => {
+  const dec = new Decoder();
+  // A huge chunk with no newline must not be retained forever.
+  dec.push('x'.repeat(11 * 1024 * 1024));
+  // A following complete, valid line still parses cleanly.
+  assert.deepEqual(dec.push('{"t":"end"}\n'), [{ t: 'end' }]);
+});
+
 test('validate accepts well-formed messages', () => {
   const good = [
     { t: 'hello', want: 'room' },
+    { t: 'reclaim', code: 'brave-otter' },
     { t: 'room', code: 'brave-otter' },
+    { t: 'gone', code: 'brave-otter' },
     { t: 'knock', id: 'g1', name: 'siddh', fp: 'a1', seen: false },
     { t: 'knock', id: 'g1', name: 'siddh', fp: 'a1', seen: 'siddh' },
     { t: 'knock', id: 'g1', name: 'siddh', fp: 'a1', seen: null },
@@ -96,6 +124,10 @@ test('validate rejects malformed messages', () => {
     { t: 'hello', want: 'shell' },
     { t: 'room' },
     { t: 'room', code: 5 },
+    { t: 'reclaim' },
+    { t: 'reclaim', code: 5 },
+    { t: 'gone' },
+    { t: 'gone', code: 5 },
     { t: 'admit' },
     { t: 'admit', id: 7 },
     { t: 'key', id: 'g1' },
@@ -108,6 +140,6 @@ test('validate rejects malformed messages', () => {
 });
 
 test('TYPES exposes a constant for every message type', () => {
-  const keys = ['HELLO', 'ROOM', 'KNOCK', 'ADMIT', 'DENY', 'JOINED', 'LEFT', 'KEY', 'RESIZE', 'SCREEN', 'TO', 'DROP', 'END'];
+  const keys = ['HELLO', 'RECLAIM', 'ROOM', 'GONE', 'KNOCK', 'ADMIT', 'DENY', 'JOINED', 'LEFT', 'KEY', 'RESIZE', 'SCREEN', 'TO', 'DROP', 'END'];
   for (const k of keys) assert.equal(typeof TYPES[k], 'string', k);
 });

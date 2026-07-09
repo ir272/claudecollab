@@ -4,8 +4,10 @@
 
 /** Canonical message-type strings (the `t` field of every message). */
 export const TYPES = Object.freeze({
-  HELLO: 'hello', // host->relay: {t:'hello', want:'room'}
-  ROOM: 'room', // relay->host: {t:'room', code}
+  HELLO: 'hello', // host->relay: {t:'hello', want:'room'}          — new room
+  RECLAIM: 'reclaim', // host->relay: {t:'reclaim', code}           — take back an existing room after a drop
+  ROOM: 'room', // relay->host: {t:'room', code}                    — room granted (create OR reclaim)
+  GONE: 'gone', // relay->host: {t:'gone', code}                    — reclaim refused (expired / wrong key)
   KNOCK: 'knock', // relay->host: {t:'knock', id, name, fp, seen}
   ADMIT: 'admit', // host->relay: {t:'admit', id}
   DENY: 'deny', // host->relay: {t:'deny', id}
@@ -28,6 +30,11 @@ export function encode(obj) {
   return Buffer.from(JSON.stringify(obj) + '\n');
 }
 
+// Newline-free buffer cap (10 MB). Real messages are tiny (a full-repaint screen
+// frame is a few KB of base64), so a partial line this large is a peer that
+// never terminates — a memory-exhaustion flood. We drop it rather than grow.
+const MAX_BUF = 10 * 1024 * 1024;
+
 /**
  * Stateful, per-connection stream decoder. Feed it raw chunks (Buffer or string);
  * it buffers partial lines and returns an array of parsed messages once each line
@@ -48,8 +55,17 @@ export class Decoder {
       const line = this.#buf.slice(0, nl);
       this.#buf = this.#buf.slice(nl + 1);
       if (line.trim() === '') continue;
-      out.push(JSON.parse(line));
+      try {
+        out.push(JSON.parse(line));
+      } catch {
+        // Malformed line: drop it (spec: the relay and host drop anything that
+        // fails the check). A single unparseable line must never sever the
+        // connection or swallow the valid messages that follow it.
+      }
     }
+    // Only a newline-free remainder is left now. If it has outgrown the cap, no
+    // terminator is coming — clear it so a peer can't exhaust memory.
+    if (this.#buf.length > MAX_BUF) this.#buf = '';
     return out;
   }
 }
@@ -80,7 +96,9 @@ export function validate(obj) {
   switch (obj.t) {
     case TYPES.HELLO:
       return obj.want === 'room';
+    case TYPES.RECLAIM:
     case TYPES.ROOM:
+    case TYPES.GONE:
       return isStr(obj.code);
     case TYPES.KNOCK:
       return (

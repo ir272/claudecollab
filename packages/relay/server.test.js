@@ -21,8 +21,9 @@ const { generateKeyPairSync } = utils;
 const newKey = () => generateKeyPairSync('ed25519').private;
 
 // A host client: opens a no-pty channel and talks protocol. `next(pred)` resolves
-// with the first (queued or future) decoded message matching `pred`.
-function connectHost(port) {
+// with the first (queued or future) decoded message matching `pred`. Pass a fixed
+// `privateKey` to reconnect as the same host (its fingerprint gates reclaim).
+function connectHost(port, privateKey = newKey()) {
   return new Promise((resolve, reject) => {
     const client = new Client();
     const dec = new Decoder();
@@ -48,7 +49,7 @@ function connectHost(port) {
         resolve({ client, stream, next, send: (o) => stream.write(encode(o)) });
       });
     });
-    client.connect({ host: '127.0.0.1', port, username: 'host', privateKey: newKey() });
+    client.connect({ host: '127.0.0.1', port, username: 'host', privateKey });
   });
 }
 
@@ -295,4 +296,93 @@ test('relay: per-room knock lockout after too many attempts from one ip', async 
   assert.equal(knocked, false, 'locked-out attempt never reaches the host');
 
   host.send({ t: TYPES.END });
+});
+
+test('relay: a malformed protocol line is dropped, the host channel survives', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  host.stream.write('this is not json\n'); // garbage on the control channel
+  host.send({ t: TYPES.HELLO, want: 'room' }); // valid message, same channel
+  const room = await host.next((m) => m.t === TYPES.ROOM);
+  assert.match(room.code, /^[a-z]+-[a-z]+$/, 'hello still handled after a bad line');
+
+  host.send({ t: TYPES.END });
+});
+
+test('relay: host reconnects with the same key and reclaims its room', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+  const port = relay.port;
+
+  const hostKey = newKey();
+  const host = await connectHost(port, hostKey);
+  host.send({ t: TYPES.HELLO, want: 'room' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // A guest joins and goes live.
+  const g = await connectGuest(port, { code, privateKey: newKey() });
+  await g.waitFor('pick a name');
+  g.type('sid\r');
+  const knock = await host.next((m) => m.t === TYPES.KNOCK);
+  host.send({ t: TYPES.ADMIT, id: knock.id });
+  await host.next((m) => m.t === TYPES.JOINED && m.id === knock.id);
+  host.send({ t: TYPES.SCREEN, data: b64('BEFORE-DROP\r\n') });
+  await g.waitFor('BEFORE-DROP');
+
+  // Host's wifi drops: tear the connection down. The guest stays connected and
+  // sees the reconnecting notice; the room is held (not ended).
+  host.client.end();
+  await g.waitFor('reconnecting');
+
+  // Host comes back with the SAME key and reclaims the exact room.
+  const host2 = await connectHost(port, hostKey);
+  host2.send({ t: TYPES.RECLAIM, code });
+  const room2 = await host2.next((m) => m.t === TYPES.ROOM);
+  assert.equal(room2.code, code, 'same room handed back on reclaim');
+
+  // The relay re-syncs the still-present guest's terminal size.
+  const rz = await host2.next((m) => m.t === TYPES.RESIZE && m.id === knock.id);
+  assert.deepEqual([rz.cols, rz.rows], [100, 30]);
+
+  // The reattached host can broadcast and reach the guest that never left.
+  host2.send({ t: TYPES.SCREEN, data: b64('BACK-ONLINE\r\n') });
+  await g.waitFor('BACK-ONLINE');
+
+  // And the guest's keystrokes now flow to the new host connection.
+  g.type('Z');
+  const keyMsg = await host2.next((m) => m.t === TYPES.KEY && m.id === knock.id);
+  assert.equal(unb64(keyMsg.data), 'Z');
+
+  host2.send({ t: TYPES.END });
+  await g.onClose();
+});
+
+test('relay: reclaim with a different key is refused (no room hijack)', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+  const port = relay.port;
+
+  const host = await connectHost(port, newKey());
+  host.send({ t: TYPES.HELLO, want: 'room' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+  host.client.end();
+
+  // A code-guesser with a different key tries to steal the room brain.
+  const attacker = await connectHost(port, newKey());
+  attacker.send({ t: TYPES.RECLAIM, code });
+  const resp = await attacker.next((m) => m.t === TYPES.GONE || m.t === TYPES.ROOM);
+  assert.equal(resp.t, TYPES.GONE, 'foreign key cannot reclaim the room');
+  assert.equal(resp.code, code);
+});
+
+test('relay: reclaiming an expired/unknown room is refused', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  host.send({ t: TYPES.RECLAIM, code: 'no-such-room' });
+  const resp = await host.next((m) => m.t === TYPES.GONE || m.t === TYPES.ROOM);
+  assert.equal(resp.t, TYPES.GONE, 'nothing to reclaim');
 });

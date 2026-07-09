@@ -42,7 +42,9 @@ const COPY = {
   noRoom: (code) => `no room "${code}" — it may have ended or the code is wrong. \u{1F44B}\r\n`,
   lockout: 'too many attempts — try again in a minute. \u{1F44B}\r\n',
   ended: '\r\nthe session has ended. \u{1F44B}\r\n',
-  hostGone: '\r\nhost disconnected — waiting for them to come back…\r\n',
+  // Honest now that reclaim exists (spec failure table: guests see "host
+  // reconnecting…"; the relay holds the room for the TTL grace window).
+  hostGone: '\r\nhost reconnecting…\r\n',
 };
 
 function safeWrite(stream, data) {
@@ -142,22 +144,27 @@ export function startRelay(opts = {}) {
     live.delete(code);
   }
 
-  function onHostGone(code) {
+  // The host's control connection closed. `conn` is the connection that closed;
+  // if it is no longer the room's host connection, a newer one has already
+  // reclaimed the room (wifi-drop race — the old socket closes late), so ignore.
+  function onHostGone(code, conn) {
     const room = live.get(code);
     if (!room || !room.hostPresent) return;
+    if (conn && room.hostConn !== conn) return; // superseded by a reclaim; not really gone
     room.hostPresent = false;
     registry.hostDropped(code); // registry starts its own grace timer
     for (const rec of allRecs(room)) safeWrite(rec.stream, COPY.hostGone);
-    // No host-return protocol in v1: after the grace window, end the room.
+    // Guests wait, visibly (spec). If the host reclaims with its key before the
+    // grace window elapses, RECLAIM cancels this timer; otherwise the room ends.
     room.hostTimer = setTimeout(() => closeRoom(code, COPY.ended), ttlMs);
     room.hostTimer.unref?.();
   }
 
   // ---- host protocol channel ------------------------------------------------
 
-  function setupHostChannel(conn, stream) {
+  function setupHostChannel(conn, stream, hostFp) {
     const dec = new Decoder();
-    let code = null; // this host owns exactly one room, set on `hello`
+    let code = null; // this host owns exactly one room, set on `hello`/`reclaim`
 
     const handle = (msg) => {
       if (!validate(msg)) return; // drop anything malformed (spec: fail closed)
@@ -171,12 +178,46 @@ export function startRelay(opts = {}) {
             hostConn: conn,
             hostStream: stream,
             hostPresent: true,
+            hostFp, // gates reclaim: only this key may take the room back
             guests: new Map(),
             pending: new Map(),
             seen: new Map(),
             hostTimer: null,
           });
           safeWrite(stream, encode({ t: TYPES.ROOM, code }));
+          return;
+        }
+        case TYPES.RECLAIM: {
+          if (code) return; // this connection already owns a room
+          const target = msg.code;
+          const room = live.get(target);
+          // registry.get honors TTL expiry; hostFp must match the original host
+          // key so a code-guesser cannot hijack the room brain (spec §trust).
+          if (!room || !registry.get(target) || !hostFp || room.hostFp !== hostFp) {
+            safeWrite(stream, encode({ t: TYPES.GONE, code: target }));
+            return;
+          }
+          // Reattach this connection as the room's host. Newest wins: bump any
+          // still-open prior host socket (the drop may not be detected yet).
+          const oldConn = room.hostConn;
+          const oldStream = room.hostStream;
+          room.hostConn = conn;
+          room.hostStream = stream;
+          room.hostPresent = true;
+          clearTimeout(room.hostTimer); // cancel the pending end-room timer
+          room.hostTimer = null;
+          registry.hostReturned(target); // cancel the registry grace timer too
+          code = target;
+          if (oldConn && oldConn !== conn) {
+            safeEnd(oldStream);
+            safeEnd(oldConn);
+          }
+          safeWrite(stream, encode({ t: TYPES.ROOM, code }));
+          // Re-sync every still-present guest's terminal size so the brain can
+          // re-clamp the shared view (sizes may have changed during the outage).
+          for (const rec of room.guests.values()) {
+            safeWrite(stream, encode({ t: TYPES.RESIZE, id: rec.id, cols: rec.cols, rows: rec.rows }));
+          }
           return;
         }
         case TYPES.ADMIT: {
@@ -251,7 +292,7 @@ export function startRelay(opts = {}) {
       for (const msg of dec.push(chunk)) handle(msg);
     });
     const drop = () => {
-      if (code) onHostGone(code);
+      if (code) onHostGone(code, conn);
     };
     stream.on('close', drop);
     conn.on('close', drop);
@@ -442,7 +483,7 @@ export function startRelay(opts = {}) {
           if (started) return;
           started = true;
           if (isHost) {
-            setupHostChannel(conn, stream);
+            setupHostChannel(conn, stream, ident.fp);
           } else {
             // Stash ids so window-change can find this guest's record.
             const before = new Set(live.get(ident.username)?.pending.keys() ?? []);
