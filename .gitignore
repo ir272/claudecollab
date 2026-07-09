@@ -1,0 +1,6 @@
+node_modules/
+mockup/out/
+spike/spike_host_key*
+spike/*.log
+.DS_Store
+*.tsbuildinfo
