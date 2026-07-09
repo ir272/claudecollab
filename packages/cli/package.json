@@ -1,0 +1,13 @@
+{
+  "name": "@claude-share/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/renderer.js",
+  "bin": {
+    "claude-share": "bin/claude-share.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  }
+}
