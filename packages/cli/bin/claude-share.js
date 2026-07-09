@@ -1,28 +1,46 @@
 #!/usr/bin/env node
 // claude-share — wrap Claude Code in a PTY and paint a live multiplayer band
-// under its full-screen TUI. Runs Claude locally (frame-synced band redraws,
-// full I/O passthrough) and, unless `--no-relay`, connects to a relay so real
-// ssh guests can watch live. Task 5 is viewer-grade: guests knock, the host
-// admits with y/n, guests mirror the host's screen. Draft-lines, the queue, and
-// the per-role input gate land in Tasks 6–7.
+// under its full-screen TUI. Runs Claude locally (frame-synced band redraws, full
+// I/O passthrough) and, unless `--no-relay`, connects to a relay so real ssh
+// guests can join and co-drive.
+//
+// Task 7 makes the room real: RoomState tracks participants/roles/mode/size; the
+// per-role gate routes every keystroke (host and guests alike) to the draft
+// composer, to Claude, or to nothing; sent drafts land in the attributed queue and
+// drain one-per-idle (fail closed); /role /kick /pause /resume /recap /end are
+// wired; joiners get a context card before the mirror; a mode flip with guests
+// present raises a warning banner; the shared view is clamped to the smallest
+// participant (floor 80×24).
+//
+// Solo mode (`--no-relay`) keeps the Task 3/5 behavior: the host drives Claude
+// directly and the band is a status placeholder — the composer is a sharing tool.
 
 import process from 'node:process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
-import { paint } from '../src/renderer.js';
+import { paint, ROLE_GLYPH, draftBox, queueBlock, knockLine } from '../src/renderer.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
 import { connectRelay, parseRelayUrl } from '../src/relay-client.js';
+import { RoomState, HOST_ID } from '../src/brain/state.js';
+import { Queue } from '../src/brain/queue.js';
+import { Log } from '../src/brain/log.js';
+import { Drafts } from '../src/brain/drafts.js';
+import { dispatch, classifySend, sendAllowed } from '../src/brain/gate.js';
+import { parse as parseCommand, permitted as commandPermitted, resolveMention } from '../src/brain/commands.js';
+import { build as buildCard } from '../src/brain/card.js';
 
 function parseArgs(argv) {
   const opts = {
     relay: true,
     relayUrl: 'ssh://127.0.0.1:2222', // dev default; override with --relay <url>
-    bandRows: 2,
+    bandRows: 6, // status + room for a focused draft box (3) + a couple queue rows
     cmd: 'claude',
     hooks: true,
+    guests: 'prompter', // default role for a newly admitted guest (spec default)
     childArgs: [],
   };
   const passthrough = [];
@@ -31,8 +49,9 @@ function parseArgs(argv) {
     if (a === '--no-relay') opts.relay = false;
     else if (a === '--relay') opts.relayUrl = argv[++i] ?? opts.relayUrl;
     else if (a === '--no-hooks') opts.hooks = false;
-    else if (a === '--band-rows') opts.bandRows = Math.max(1, Number(argv[++i]) || opts.bandRows);
+    else if (a === '--band-rows') opts.bandRows = Math.max(2, Number(argv[++i]) || opts.bandRows);
     else if (a === '--cmd') opts.cmd = argv[++i];
+    else if (a === '--guests') opts.guests = argv[++i] ?? opts.guests;
     else if (a === '--') {
       passthrough.push(...argv.slice(i + 1));
       break;
@@ -50,9 +69,9 @@ function hostName() {
   }
 }
 
-// The host's stable ssh identity. Its fingerprint gates room reclaim on the relay
-// (spec §failure-behavior), so it must survive restarts — we persist one under
-// ~/.claude-share and reuse it. Generated on first run; readable only by the user.
+// The host's stable ssh identity — its fingerprint gates room reclaim on the relay
+// (spec §failure-behavior), so it must survive restarts. Persisted under
+// ~/.claude-share, generated on first run, readable only by the user.
 function loadHostKey() {
   const dir = path.join(os.homedir(), '.claude-share');
   const keyPath = path.join(dir, 'host_key');
@@ -75,26 +94,38 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const { stdin, stdout } = process;
   const bandRows = opts.bandRows;
+  const multiplayer = opts.relay; // the composer/gate is active only when sharing
 
-  // Hook-based state detection (Task 4). We inject a --settings file whose hooks
-  // post to a private unix socket, and listen on that socket for busy/idle/ask/tool.
-  // Only for the real `claude` binary — a stub cmd (e.g. --cmd bash) would choke on
-  // `--settings`, and its hooks would never fire anyway.
+  // ── the brain ─────────────────────────────────────────────────────────────
+  const state = new RoomState({
+    hostName: hostName(),
+    defaultRole: opts.guests,
+    hostSize: { cols: stdout.columns || 80, rows: stdout.rows || 24 },
+  });
+  const queue = new Queue();
+  const log = new Log();
+  const drafts = new Drafts();
+  const toasted = new Set(); // userIds already shown the viewer toast
+  const knockInfo = new Map(); // id -> {name, fp} captured at knock time
+  const claude = { state: 'idle' };
+  let armed = false; // true only while a permission ask is pending (hook-armed)
+  let pendingKnocks = []; // FIFO of {id,name,fp,seen} awaiting the host's y/n
+  let endConfirm = 0; // /end confirmation stage: 0 none · 1 "end?" · 2 "save?"
+  const ui = { toast: null, toastTimer: null };
+  let relay = null;
+  let exited = false;
+
+  // ── hook-based state detection (Task 4) ─────────────────────────────────────
   const childArgs = [...opts.childArgs];
   let hooks = null;
   let settingsFile = null;
   let socketPath = null;
-  const claude = { state: 'idle', mode: 'default' };
   if (opts.hooks && opts.cmd === 'claude') {
     try {
       socketPath = path.join(os.tmpdir(), `claude-share-${process.pid}.sock`);
       settingsFile = installHooks(socketPath);
       hooks = listenHooks(socketPath);
       await hooks.ready;
-      hooks.on('busy', () => (claude.state = 'busy'));
-      hooks.on('idle', () => (claude.state = 'idle'));
-      hooks.on('ask', () => (claude.state = 'ask'));
-      hooks.on('mode', (m) => (claude.mode = m));
       childArgs.unshift('--settings', settingsFile);
     } catch (err) {
       process.stderr.write(`claude-share: hook setup failed (${err.message}); state detection off\n`);
@@ -115,73 +146,249 @@ async function main() {
 
   const CLAUDE_STATUS = { busy: '✻ brewing…', idle: '● idle', ask: '⚠ permission ask pending' };
 
-  // Relay/multiplayer state (Task 5). The relay hands us a room code, forwards
-  // guest knocks, and mirrors our screen to admitted guests. Everything else
-  // (drafts, roles, the real per-role gate) is Task 7; here every guest is a
-  // viewer whose keystrokes we drop.
-  const relayState = {
-    room: null, // room code once the relay grants it
-    pendingKnocks: [], // FIFO of {id,name,fp,seen} awaiting the host's y/n
-    guests: new Map(), // id -> {name, role} for admitted guests
-    namesById: new Map(), // id -> claimed name (from the knock, for join/leave copy)
-    toast: null, // transient one-line event message shown in the band
-    toastTimer: null,
-  };
+  // ── band rendering ───────────────────────────────────────────────────────────
+  // The dynamic region: a pending knock wins (spec: knocks render in the band,
+  // never over Claude's output), otherwise a status/toast line then the draft
+  // boxes and the attributed queue. paint() clips to the reserved rows.
+  const nameOf = (id) => state.nameOf(id) ?? knockInfo.get(id)?.name ?? id;
 
-  let exited = false;
+  function bandDynamicLines(cols) {
+    const k = pendingKnocks[0];
+    if (k) return [knockLine(k, { cols })];
 
-  // Short, readable fingerprint tail for the knock line (spec frame: "key a1b2c3…").
-  const shortFp = (fp) => (fp ? fp.replace(/^SHA256:/, '').slice(0, 6) + '…' : 'no key');
+    const lines = [];
+    if (state.paused) lines.push('⏸ sharing paused — /resume to continue');
+    else if (ui.toast) lines.push(ui.toast);
+    else if (hooks) lines.push(CLAUDE_STATUS[claude.state] ?? claude.state);
+    else if (state.room) lines.push(`room live · ${state.guests().length} watching`);
+    else lines.push(relay ? 'connecting to relay…' : 'solo session · band is a placeholder');
 
-  // The band's dynamic line, in priority order: a pending knock wins (spec: knocks
-  // render in the band, never over Claude's output), then a transient event toast,
-  // then Claude's hook-derived state, then a relay/solo fallback.
-  const bandStatus = () => {
-    const k = relayState.pendingKnocks[0];
-    if (k) {
-      const seenNote = k.seen == null ? ' · ⚠ first time seeing this key' : ` · seen before as ${k.seen}`;
-      return `🚪 "${k.name}" knocking — key ${shortFp(k.fp)}${seenNote} — admit? (y/n)`;
+    if (multiplayer) {
+      const hostBoxId = drafts.activeBox(HOST_ID)?.id;
+      for (const b of drafts.snapshot().boxes) {
+        const authors = b.authors.map(nameOf);
+        lines.push(...draftBox({ text: b.text, authors }, { cols, focused: b.id === hostBoxId }));
+      }
+      const qitems = queue.items.map((it) => ({ author: nameOf(it.author), text: it.text }));
+      lines.push(...queueBlock(qitems, { cols }));
     }
-    if (relayState.toast) return relayState.toast;
-    if (hooks) return CLAUDE_STATUS[claude.state] ?? claude.state;
-    if (relayState.room) return `room live · ${relayState.guests.size} watching`;
-    return relay ? 'connecting to relay…' : 'no relay — solo session · band is a placeholder';
+    return lines;
+  }
+
+  const bandState = () => {
+    const cols = stdout.columns || 80;
+    return {
+      cols,
+      rows: stdout.rows || 24,
+      bandRows,
+      room: state.room,
+      participants: state.list().map((p) => ({ name: p.name, role: p.role })),
+      mode: state.mode,
+      lines: bandDynamicLines(cols),
+    };
   };
-
-  const bandState = () => ({
-    cols: stdout.columns || 80,
-    rows: stdout.rows || 24,
-    bandRows,
-    room: relayState.room,
-    participants: [{ name: hostName(), role: 'host' }, ...relayState.guests.values()],
-    mode: hooks ? claude.mode : 'default',
-    status: bandStatus(),
-  });
-
   const repaintBand = () => {
     if (stdout.isTTY) stdout.write(paint(bandState()));
   };
 
   const showToast = (msg, ms = 4000) => {
-    relayState.toast = msg;
-    clearTimeout(relayState.toastTimer);
-    relayState.toastTimer = setTimeout(() => {
-      relayState.toast = null;
+    ui.toast = msg;
+    clearTimeout(ui.toastTimer);
+    ui.toastTimer = setTimeout(() => {
+      ui.toast = null;
       repaintBand();
     }, ms);
-    relayState.toastTimer.unref?.();
+    ui.toastTimer.unref?.();
     repaintBand();
   };
 
-  // ── relay client (Task 5) ────────────────────────────────────────────────────
-  // Connect to the relay as the host, request a room, and mirror our screen to
-  // admitted guests. A pending knock is answered by the host's next lone y/n
-  // (see the stdin handler). If the relay is unreachable we warn and keep running
-  // solo — a down relay must never take Claude down with it.
-  let relay = null;
+  // A message meant for one participant: mail it to a guest, and surface it in the
+  // host's band too so moderation stays visible.
+  const notify = (userId, msg) => {
+    if (userId && userId !== HOST_ID) relay?.sendTo(userId, `\r\n${msg}\r\n`);
+    showToast(msg);
+  };
 
+  // ── size clamp (spec §renderer) ────────────────────────────────────────────
+  const recomputeClamp = () => {
+    const { cols, rows } = state.clamp();
+    try {
+      pty.resize(cols, rows); // pty.resize subtracts bandRows for the child
+    } catch {}
+  };
+
+  // ── queue drain (fail closed, one per idle) ─────────────────────────────────
+  const pump = () => {
+    if (!hooks || claude.state !== 'idle') return; // no drain unless known-idle
+    const item = queue.drain('idle');
+    if (!item) return;
+    pty.write(item.text + '\r');
+    claude.state = 'busy'; // optimistic; the UserPromptSubmit hook confirms
+    repaintBand();
+  };
+
+  // ── routing a sent draft ─────────────────────────────────────────────────────
+  const routeSend = (userId, send) => {
+    const role = state.roleOf(userId) ?? 'viewer';
+    const text = send.text;
+    const cls = classifySend(text);
+
+    if (cls.kind === 'command') return handleCommand(userId, text);
+
+    if (!sendAllowed(cls.kind, role)) {
+      const what = cls.kind === 'bash' ? 'run bash' : cls.kind === 'claude-slash' ? 'use slash commands' : 'send that';
+      notify(userId, `you can't ${what} — ask the host for a driver role`);
+      return;
+    }
+    // Bound for Claude. Log by display name (card is display-only); attribute the
+    // queue by userId (permission + purge on leave).
+    log.prompt(nameOf(userId), text);
+    if (!hooks) {
+      pty.write(text + '\r'); // no state tracking → send immediately
+      return;
+    }
+    queue.enqueue(text, userId);
+    pump();
+    repaintBand();
+  };
+
+  // ── claude-share commands ─────────────────────────────────────────────────────
+  function handleCommand(userId, text) {
+    const role = state.roleOf(userId) ?? 'viewer';
+    const parsed = parseCommand(text);
+    if (!parsed) return;
+    if (!commandPermitted(parsed.name, role)) {
+      notify(userId, `you can't run /${parsed.name}`);
+      return;
+    }
+    if (parsed.error) {
+      notify(userId, parsed.error);
+      return;
+    }
+    const by = nameOf(userId);
+    switch (parsed.name) {
+      case 'role': {
+        const targetId = resolveMention(state, parsed.mention);
+        if (!targetId || !state.setRole(targetId, parsed.role)) {
+          notify(userId, `can't set @${parsed.mention} to ${parsed.role}`);
+          return;
+        }
+        const msg = `${by} set ${state.nameOf(targetId)} to ${parsed.role} ${ROLE_GLYPH[parsed.role] ?? ''}`;
+        log.event(msg);
+        showToast(msg);
+        break;
+      }
+      case 'kick': {
+        const targetId = resolveMention(state, parsed.mention);
+        if (!targetId || targetId === HOST_ID) {
+          notify(userId, `can't kick @${parsed.mention}`);
+          return;
+        }
+        const name = state.nameOf(targetId);
+        relay?.drop(targetId, true); // ban=true blocklists the fingerprint
+        state.removeGuest(targetId);
+        drafts.removeUser(targetId);
+        queue.removeByAuthor(targetId);
+        knockInfo.delete(targetId);
+        recomputeClamp();
+        const msg = `${name} was kicked`;
+        log.event(msg);
+        showToast(msg);
+        break;
+      }
+      case 'pause':
+        state.setPaused(true);
+        relay?.sendScreen('\x1b[2J\x1b[H  ⏸ sharing paused — the host will resume shortly\r\n');
+        log.event(`${by} paused sharing`);
+        showToast('sharing paused — guests see a hold card');
+        break;
+      case 'resume':
+        state.setPaused(false);
+        log.event(`${by} resumed sharing`);
+        showToast('sharing resumed');
+        break;
+      case 'recap':
+        runRecap(by);
+        break;
+      case 'end':
+        beginEnd();
+        break;
+    }
+    repaintBand();
+  }
+
+  // /recap — one-shot headless Claude over the attributed log, posted to the room.
+  // Best-effort: uses the host's existing auth; failures are surfaced, never fatal.
+  function runRecap(by) {
+    showToast('recap: asking Claude…', 8000);
+    const prompt = `Summarize this collaborative coding session transcript in 3-4 plain sentences:\n\n${log.toText()}`;
+    execFile('claude', ['-p', prompt], { timeout: 30000, maxBuffer: 1 << 20 }, (err, out) => {
+      const summary = err ? 'recap unavailable (claude -p failed)' : String(out).trim();
+      log.event(`recap by ${by}: ${summary}`);
+      showToast(`recap ready — ${summary.split('\n')[0].slice(0, 60)}`, 10000);
+    });
+  }
+
+  // /end — two confirmations, answered by the host's y/n (see the stdin handler).
+  function beginEnd() {
+    endConfirm = 1;
+    showToast('end session? everyone will be disconnected (y/n)', 30000);
+  }
+  function handleEndConfirm(d) {
+    const s = d.toString('utf8');
+    const yes = s === 'y' || s === 'Y';
+    const no = s === 'n' || s === 'N';
+    if (endConfirm === 1) {
+      if (yes) {
+        endConfirm = 2;
+        showToast('save a session summary to session.md? (y/n)', 30000);
+      } else if (no) {
+        endConfirm = 0;
+        showToast('end cancelled');
+      }
+      return;
+    }
+    if (endConfirm === 2) {
+      if (yes) {
+        try {
+          log.write(path.join(process.cwd(), 'session.md'));
+        } catch {}
+      }
+      if (yes || no) {
+        endConfirm = 0;
+        relay?.end();
+        cleanup(0);
+      }
+    }
+  }
+
+  // ── input effect application (host + guests, one table via the gate) ─────────
+  const applyInput = (userId, eff) => {
+    switch (eff.kind) {
+      case 'pty':
+        pty.write(eff.data);
+        break;
+      case 'draft': {
+        const r = drafts.keystroke(userId, eff.bytes);
+        if (r.send) routeSend(userId, r.send);
+        repaintBand();
+        break;
+      }
+      case 'detach':
+        if (userId !== HOST_ID) relay?.drop(userId, false); // self-detach, no ban
+        break;
+      case 'toast':
+        notify(eff.target, eff.message);
+        break;
+      case 'drop':
+      default:
+        break;
+    }
+  };
+
+  // ── relay client (Task 5 transport, Task 7 brain) ────────────────────────────
   const answerKnock = (admitYes) => {
-    const knock = relayState.pendingKnocks.shift();
+    const knock = pendingKnocks.shift();
     if (!knock || !relay) return;
     if (admitYes) relay.admit(knock.id);
     else {
@@ -195,31 +402,51 @@ async function main() {
     try {
       relay = connectRelay({ url: opts.relayUrl, privateKey: loadHostKey() });
       relay.onRoom((code) => {
-        relayState.room = code;
+        state.setRoom(code);
         const { host: relayHost } = parseRelayUrl(opts.relayUrl);
         showToast(`room ready · invite: ssh ${code}@${relayHost}`, 8000);
       });
       relay.onKnock((knock) => {
-        relayState.namesById.set(knock.id, knock.name);
-        relayState.pendingKnocks.push(knock);
+        knockInfo.set(knock.id, { name: knock.name, fp: knock.fp });
+        pendingKnocks.push(knock);
         repaintBand();
       });
       relay.onJoin((id) => {
-        const name = relayState.namesById.get(id) ?? 'guest';
-        relayState.guests.set(id, { name, role: 'viewer' });
-        showToast(`${name} joined as viewer 👁`);
+        const info = knockInfo.get(id) ?? { name: 'guest', fp: null };
+        const g = state.addGuest(id, { name: info.name, fp: info.fp, role: opts.guests });
+        log.event(`${g.name} joined as ${g.role}`);
+        // The join context card lands in the guest's own scrollback before the
+        // live mirror attaches (spec §join context card).
+        try {
+          const card = buildCard(state, log, { joinerId: id, claudeState: claude.state });
+          relay.sendTo(id, card.replace(/\n/g, '\r\n') + '\r\n');
+        } catch {}
+        showToast(`${g.name} joined as ${g.role} ${ROLE_GLYPH[g.role] ?? ''}`);
+        recomputeClamp();
       });
       relay.onLeave((id) => {
-        const name = relayState.guests.get(id)?.name ?? relayState.namesById.get(id) ?? 'a guest';
-        relayState.guests.delete(id);
-        relayState.pendingKnocks = relayState.pendingKnocks.filter((k) => k.id !== id);
-        relayState.namesById.delete(id);
+        const name = nameOf(id);
+        state.removeGuest(id);
+        drafts.removeUser(id);
+        queue.removeByAuthor(id);
+        pendingKnocks = pendingKnocks.filter((k) => k.id !== id);
+        knockInfo.delete(id);
+        recomputeClamp();
+        log.event(`${name} left`);
         showToast(`${name} left`);
       });
-      // Viewer-grade (Task 5): guests are viewers, so their keystrokes are dropped
-      // here. Task 7's role gate routes these by role. Registered so the plumbing
-      // is exercised and the deviation is explicit in code.
-      relay.onKey(() => {});
+      relay.onKey(({ id, data }) => {
+        const role = state.roleOf(id) ?? 'viewer';
+        applyInput(id, dispatch(id, role, data, { armed, toasted }));
+      });
+      relay.onResize(({ id, cols, rows }) => {
+        state.setSize(id, cols, rows);
+        if (state.belowFloor(id)) {
+          relay.sendTo(id, '\x1b[2J\x1b[H  your terminal is below 80×24 — make it bigger to join the shared view\r\n');
+        }
+        recomputeClamp();
+        repaintBand();
+      });
       relay.onClose(() => {
         if (!exited) showToast('relay disconnected — running solo', 8000);
       });
@@ -234,12 +461,51 @@ async function main() {
     }
   }
 
-  // Redraw the band when Claude's state or mode changes (state itself is updated
-  // by the handlers registered above, which run first).
+  // ── hook events → brain ───────────────────────────────────────────────────────
   if (hooks) {
-    for (const evt of ['busy', 'idle', 'ask', 'mode']) hooks.on(evt, repaintBand);
+    hooks.on('busy', () => {
+      claude.state = 'busy';
+      armed = false;
+      repaintBand();
+    });
+    hooks.on('idle', () => {
+      claude.state = 'idle';
+      armed = false;
+      pump();
+      repaintBand();
+    });
+    hooks.on('ask', () => {
+      claude.state = 'ask';
+      armed = true; // the ONLY thing that arms driver+ y/n → Claude (spec: gate on events)
+      repaintBand();
+    });
+    hooks.on('tool', (p) => {
+      const name = p?.tool_name ?? 'tool';
+      const files = [];
+      const inp = p?.tool_input ?? {};
+      for (const key of ['file_path', 'path', 'notebook_path']) {
+        if (typeof inp[key] === 'string') files.push(inp[key]);
+      }
+      log.tool(name, files);
+      repaintBand();
+    });
+    hooks.on('mode', (m) => {
+      const changed = state.setMode(m);
+      // Any mode change with guests present raises a prominent warning banner into
+      // the shared transcript (spec §roles).
+      if (changed && state.guests().length) {
+        const warn =
+          m === 'bypassPermissions'
+            ? '⚠ bypass mode: everyone in this room can now drive real commands with no asks'
+            : `⚠ mode changed to ${m} — visible to the whole room`;
+        log.event(warn);
+        showToast(warn, 8000);
+      }
+      repaintBand();
+    });
   }
 
+  // ── teardown ──────────────────────────────────────────────────────────────────
   const cleanup = (code) => {
     if (exited) return;
     exited = true;
@@ -247,14 +513,10 @@ async function main() {
       if (stdin.isTTY) stdin.setRawMode(false);
     } catch {}
     stdin.pause();
-    // Tell the relay the session is over (disconnects guests, drops the room) and
-    // close our control channel. `end` then `close` mirrors /end → teardown.
     try {
       relay?.end();
       relay?.close();
     } catch {}
-    // Best-effort synchronous teardown of the hook socket + settings file before
-    // we exit (hooks.close() is async and wouldn't finish before process.exit).
     try {
       hooks?.close();
     } catch {}
@@ -265,41 +527,41 @@ async function main() {
         } catch {}
       }
     }
-    // Leave the alternate screen the child entered, then drop below the band.
     stdout.write('\x1b[?1049l\r\n[claude-share exited]\r\n');
     process.exit(code ?? 0);
   };
 
-  // Passthrough + frame-synced band redraw: write the whole frame, then repaint.
-  // The same frame is mirrored to admitted guests (viewer-grade multiplayer). The
-  // host-local band (repaintBand → stdout) is deliberately NOT broadcast in v1;
-  // guest-side band compositing + the shared-view size clamp land in Task 7.
+  // ── passthrough + broadcast ────────────────────────────────────────────────────
+  // Write every Claude frame locally; mirror it to guests unless paused. The band
+  // redraws on the frame boundary so it never smears mid-repaint.
   pty.onFrame((chunk) => {
     stdout.write(chunk);
-    if (relay) relay.sendScreen(chunk);
+    if (relay && !state.paused) relay.sendScreen(chunk);
     repaintBand();
   });
   pty.onExit(({ exitCode }) => cleanup(exitCode ?? 0));
 
-  // Host keystrokes → child, raw. In raw mode Ctrl+C arrives as a 0x03 byte and
-  // is forwarded to Claude (spec input table: host Ctrl+C is normal).
+  // ── host stdin ──────────────────────────────────────────────────────────────
   if (stdin.isTTY) stdin.setRawMode(true);
   stdin.resume();
   stdin.on('data', (d) => {
-    // While a guest is knocking, the host's lone y/n answers the knock and is NOT
-    // forwarded to Claude (Task 5 admit path). A single y/n keystroke only — a
-    // paste or a longer token passes straight through. Task 7 replaces this stopgap
-    // with the full per-role input gate.
-    if (relay && relayState.pendingKnocks.length) {
+    // Modal host interactions intercept a lone y/n first: an /end confirmation,
+    // then a knocking guest. Neither is forwarded to Claude.
+    if (endConfirm) return handleEndConfirm(d);
+    if (relay && pendingKnocks.length) {
       const s = d.toString('utf8');
       if (s === 'y' || s === 'Y') return answerKnock(true);
       if (s === 'n' || s === 'N') return answerKnock(false);
     }
-    pty.write(d);
+    // Sharing: the host composes through the same gate as everyone. Solo: the host
+    // drives Claude directly (the composer is a sharing tool).
+    if (multiplayer) applyInput(HOST_ID, dispatch(HOST_ID, 'host', d, { armed, toasted }));
+    else pty.write(d);
   });
 
   process.on('SIGWINCH', () => {
-    pty.resize();
+    state.setSize(HOST_ID, stdout.columns || 80, stdout.rows || 24);
+    recomputeClamp();
     repaintBand();
   });
   process.on('exit', () => {
