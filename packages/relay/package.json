@@ -1,0 +1,7 @@
+{
+  "name": "@claude-share/relay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "rooms.js"
+}
