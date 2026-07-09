@@ -8,6 +8,7 @@
     "claude-share": "bin/claude-share.js"
   },
   "dependencies": {
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "ssh2": "^1.17.0"
   }
 }

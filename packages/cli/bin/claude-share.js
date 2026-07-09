@@ -1,23 +1,35 @@
 #!/usr/bin/env node
 // claude-share — wrap Claude Code in a PTY and paint a live multiplayer band
-// under its full-screen TUI. Task 3 scope: `claude-share --no-relay` runs Claude
-// locally with a placeholder band; frame-synced redraws; full I/O passthrough.
-// Relay/knock/drafts/roles land in later tasks.
+// under its full-screen TUI. Runs Claude locally (frame-synced band redraws,
+// full I/O passthrough) and, unless `--no-relay`, connects to a relay so real
+// ssh guests can watch live. Task 5 is viewer-grade: guests knock, the host
+// admits with y/n, guests mirror the host's screen. Draft-lines, the queue, and
+// the per-role input gate land in Tasks 6–7.
 
 import process from 'node:process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
 import { paint } from '../src/renderer.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
+import { connectRelay, parseRelayUrl } from '../src/relay-client.js';
 
 function parseArgs(argv) {
-  const opts = { relay: true, bandRows: 2, cmd: 'claude', hooks: true, childArgs: [] };
+  const opts = {
+    relay: true,
+    relayUrl: 'ssh://127.0.0.1:2222', // dev default; override with --relay <url>
+    bandRows: 2,
+    cmd: 'claude',
+    hooks: true,
+    childArgs: [],
+  };
   const passthrough = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--no-relay') opts.relay = false;
+    else if (a === '--relay') opts.relayUrl = argv[++i] ?? opts.relayUrl;
     else if (a === '--no-hooks') opts.hooks = false;
     else if (a === '--band-rows') opts.bandRows = Math.max(1, Number(argv[++i]) || opts.bandRows);
     else if (a === '--cmd') opts.cmd = argv[++i];
@@ -36,6 +48,27 @@ function hostName() {
   } catch {
     return process.env.USER || 'host';
   }
+}
+
+// The host's stable ssh identity. Its fingerprint gates room reclaim on the relay
+// (spec §failure-behavior), so it must survive restarts — we persist one under
+// ~/.claude-share and reuse it. Generated on first run; readable only by the user.
+function loadHostKey() {
+  const dir = path.join(os.homedir(), '.claude-share');
+  const keyPath = path.join(dir, 'host_key');
+  try {
+    return fs.readFileSync(keyPath);
+  } catch {
+    /* not created yet */
+  }
+  const priv = ssh2.utils.generateKeyPairSync('ed25519').private;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(keyPath, priv, { mode: 0o600 });
+  } catch {
+    /* home not writable — fall back to an in-memory key for this run */
+  }
+  return priv;
 }
 
 async function main() {
@@ -81,23 +114,125 @@ async function main() {
   }
 
   const CLAUDE_STATUS = { busy: '✻ brewing…', idle: '● idle', ask: '⚠ permission ask pending' };
+
+  // Relay/multiplayer state (Task 5). The relay hands us a room code, forwards
+  // guest knocks, and mirrors our screen to admitted guests. Everything else
+  // (drafts, roles, the real per-role gate) is Task 7; here every guest is a
+  // viewer whose keystrokes we drop.
+  const relayState = {
+    room: null, // room code once the relay grants it
+    pendingKnocks: [], // FIFO of {id,name,fp,seen} awaiting the host's y/n
+    guests: new Map(), // id -> {name, role} for admitted guests
+    namesById: new Map(), // id -> claimed name (from the knock, for join/leave copy)
+    toast: null, // transient one-line event message shown in the band
+    toastTimer: null,
+  };
+
+  let exited = false;
+
+  // Short, readable fingerprint tail for the knock line (spec frame: "key a1b2c3…").
+  const shortFp = (fp) => (fp ? fp.replace(/^SHA256:/, '').slice(0, 6) + '…' : 'no key');
+
+  // The band's dynamic line, in priority order: a pending knock wins (spec: knocks
+  // render in the band, never over Claude's output), then a transient event toast,
+  // then Claude's hook-derived state, then a relay/solo fallback.
+  const bandStatus = () => {
+    const k = relayState.pendingKnocks[0];
+    if (k) {
+      const seenNote = k.seen == null ? ' · ⚠ first time seeing this key' : ` · seen before as ${k.seen}`;
+      return `🚪 "${k.name}" knocking — key ${shortFp(k.fp)}${seenNote} — admit? (y/n)`;
+    }
+    if (relayState.toast) return relayState.toast;
+    if (hooks) return CLAUDE_STATUS[claude.state] ?? claude.state;
+    if (relayState.room) return `room live · ${relayState.guests.size} watching`;
+    return relay ? 'connecting to relay…' : 'no relay — solo session · band is a placeholder';
+  };
+
   const bandState = () => ({
     cols: stdout.columns || 80,
     rows: stdout.rows || 24,
     bandRows,
-    room: null, // relay assigns this in a later task
-    participants: [{ name: hostName(), role: 'host' }],
+    room: relayState.room,
+    participants: [{ name: hostName(), role: 'host' }, ...relayState.guests.values()],
     mode: hooks ? claude.mode : 'default',
-    status: hooks
-      ? (CLAUDE_STATUS[claude.state] ?? claude.state)
-      : opts.relay
-        ? 'connecting to relay…'
-        : 'no relay — solo session · band is a placeholder (Task 3)',
+    status: bandStatus(),
   });
 
   const repaintBand = () => {
     if (stdout.isTTY) stdout.write(paint(bandState()));
   };
+
+  const showToast = (msg, ms = 4000) => {
+    relayState.toast = msg;
+    clearTimeout(relayState.toastTimer);
+    relayState.toastTimer = setTimeout(() => {
+      relayState.toast = null;
+      repaintBand();
+    }, ms);
+    relayState.toastTimer.unref?.();
+    repaintBand();
+  };
+
+  // ── relay client (Task 5) ────────────────────────────────────────────────────
+  // Connect to the relay as the host, request a room, and mirror our screen to
+  // admitted guests. A pending knock is answered by the host's next lone y/n
+  // (see the stdin handler). If the relay is unreachable we warn and keep running
+  // solo — a down relay must never take Claude down with it.
+  let relay = null;
+
+  const answerKnock = (admitYes) => {
+    const knock = relayState.pendingKnocks.shift();
+    if (!knock || !relay) return;
+    if (admitYes) relay.admit(knock.id);
+    else {
+      relay.deny(knock.id);
+      showToast(`declined ${knock.name}`);
+    }
+    repaintBand();
+  };
+
+  if (opts.relay) {
+    try {
+      relay = connectRelay({ url: opts.relayUrl, privateKey: loadHostKey() });
+      relay.onRoom((code) => {
+        relayState.room = code;
+        const { host: relayHost } = parseRelayUrl(opts.relayUrl);
+        showToast(`room ready · invite: ssh ${code}@${relayHost}`, 8000);
+      });
+      relay.onKnock((knock) => {
+        relayState.namesById.set(knock.id, knock.name);
+        relayState.pendingKnocks.push(knock);
+        repaintBand();
+      });
+      relay.onJoin((id) => {
+        const name = relayState.namesById.get(id) ?? 'guest';
+        relayState.guests.set(id, { name, role: 'viewer' });
+        showToast(`${name} joined as viewer 👁`);
+      });
+      relay.onLeave((id) => {
+        const name = relayState.guests.get(id)?.name ?? relayState.namesById.get(id) ?? 'a guest';
+        relayState.guests.delete(id);
+        relayState.pendingKnocks = relayState.pendingKnocks.filter((k) => k.id !== id);
+        relayState.namesById.delete(id);
+        showToast(`${name} left`);
+      });
+      // Viewer-grade (Task 5): guests are viewers, so their keystrokes are dropped
+      // here. Task 7's role gate routes these by role. Registered so the plumbing
+      // is exercised and the deviation is explicit in code.
+      relay.onKey(() => {});
+      relay.onClose(() => {
+        if (!exited) showToast('relay disconnected — running solo', 8000);
+      });
+      relay.onError(() => {}); // transport errors surface via onClose; never crash
+      relay.ready.then(() => relay.hello()).catch((err) => {
+        process.stderr.write(`claude-share: relay unavailable (${err.message}); running solo\n`);
+        relay = null;
+      });
+    } catch (err) {
+      process.stderr.write(`claude-share: relay setup failed (${err.message}); running solo\n`);
+      relay = null;
+    }
+  }
 
   // Redraw the band when Claude's state or mode changes (state itself is updated
   // by the handlers registered above, which run first).
@@ -105,7 +240,6 @@ async function main() {
     for (const evt of ['busy', 'idle', 'ask', 'mode']) hooks.on(evt, repaintBand);
   }
 
-  let exited = false;
   const cleanup = (code) => {
     if (exited) return;
     exited = true;
@@ -113,6 +247,12 @@ async function main() {
       if (stdin.isTTY) stdin.setRawMode(false);
     } catch {}
     stdin.pause();
+    // Tell the relay the session is over (disconnects guests, drops the room) and
+    // close our control channel. `end` then `close` mirrors /end → teardown.
+    try {
+      relay?.end();
+      relay?.close();
+    } catch {}
     // Best-effort synchronous teardown of the hook socket + settings file before
     // we exit (hooks.close() is async and wouldn't finish before process.exit).
     try {
@@ -131,8 +271,12 @@ async function main() {
   };
 
   // Passthrough + frame-synced band redraw: write the whole frame, then repaint.
+  // The same frame is mirrored to admitted guests (viewer-grade multiplayer). The
+  // host-local band (repaintBand → stdout) is deliberately NOT broadcast in v1;
+  // guest-side band compositing + the shared-view size clamp land in Task 7.
   pty.onFrame((chunk) => {
     stdout.write(chunk);
+    if (relay) relay.sendScreen(chunk);
     repaintBand();
   });
   pty.onExit(({ exitCode }) => cleanup(exitCode ?? 0));
@@ -141,7 +285,18 @@ async function main() {
   // is forwarded to Claude (spec input table: host Ctrl+C is normal).
   if (stdin.isTTY) stdin.setRawMode(true);
   stdin.resume();
-  stdin.on('data', (d) => pty.write(d));
+  stdin.on('data', (d) => {
+    // While a guest is knocking, the host's lone y/n answers the knock and is NOT
+    // forwarded to Claude (Task 5 admit path). A single y/n keystroke only — a
+    // paste or a longer token passes straight through. Task 7 replaces this stopgap
+    // with the full per-role input gate.
+    if (relay && relayState.pendingKnocks.length) {
+      const s = d.toString('utf8');
+      if (s === 'y' || s === 'Y') return answerKnock(true);
+      if (s === 'n' || s === 'N') return answerKnock(false);
+    }
+    pty.write(d);
+  });
 
   process.on('SIGWINCH', () => {
     pty.resize();
