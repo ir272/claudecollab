@@ -132,8 +132,11 @@ export function validate(obj) {
   switch (obj.t) {
     case TYPES.HELLO:
       return obj.want === 'room';
-    case TYPES.RECLAIM:
     case TYPES.ROOM:
+      // webUrl (optional): a deployed relay's public browser base URL — the host
+      // builds its printed/copied links from it instead of ssh-host:webPort.
+      return isStr(obj.code) && (obj.webUrl === undefined || isStr(obj.webUrl));
+    case TYPES.RECLAIM:
     case TYPES.GONE:
       return isStr(obj.code);
     case TYPES.KNOCK:

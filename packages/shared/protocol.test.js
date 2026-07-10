@@ -112,6 +112,7 @@ test('validate accepts well-formed messages', () => {
     { t: 'hello', want: 'room' },
     { t: 'reclaim', code: 'brave-otter' },
     { t: 'room', code: 'brave-otter' },
+    { t: 'room', code: 'brave-otter', webUrl: 'https://claude-share.fly.dev' }, // deployed relay advertises its public origin
     { t: 'gone', code: 'brave-otter' },
     { t: 'knock', id: 'g1', name: 'siddh', fp: 'a1', seen: false },
     { t: 'knock', id: 'g1', name: 'siddh', fp: 'a1', seen: 'siddh' },

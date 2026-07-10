@@ -21,6 +21,17 @@ test('the two URLs differ only by the token — pasting the invite cannot grant 
   assert.ok(hostUrl(args).startsWith(inviteUrl(args)), 'invite is the host URL without ?host=');
 });
 
+test('a deployed relay base wins over host:port — links carry the public https origin', () => {
+  const base = 'https://claude-share.fly.dev';
+  assert.equal(
+    hostUrl({ base, host: '127.0.0.1', port: 8787, code: 'humble-shark', token: 'deadbeef' }),
+    'https://claude-share.fly.dev/humble-shark?host=deadbeef',
+  );
+  assert.equal(inviteUrl({ base, host: '127.0.0.1', port: 8787, code: 'humble-shark' }), 'https://claude-share.fly.dev/humble-shark');
+  // A trailing slash in the configured base never doubles up in the link.
+  assert.equal(inviteUrl({ base: base + '/', code: 'humble-shark' }), 'https://claude-share.fly.dev/humble-shark');
+});
+
 test('readyToast only claims the clipboard when the copy happened (finding 5)', () => {
   assert.match(readyToast(true), /copied to clipboard/);
   assert.doesNotMatch(readyToast(false), /copied/);

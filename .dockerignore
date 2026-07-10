@@ -1,0 +1,11 @@
+node_modules
+.git
+.playwright-mcp
+docs
+mockup
+spike
+test
+**/*.test.js
+*.png
+Dockerfile
+fly.toml

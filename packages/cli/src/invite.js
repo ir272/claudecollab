@@ -11,14 +11,21 @@
 // seat. Keep them separate: hostUrl on the host's own status line, inviteUrl on the
 // clipboard and the host tab's "copy invite" button.
 
+// A deployed relay advertises its public https origin (`base`) in the room grant;
+// links then carry that origin. Localhost dev has no base → http://host:port.
+function origin({ base, host, port }) {
+  if (base) return String(base).replace(/\/+$/, '');
+  return `http://${host}:${port}`;
+}
+
 /** The host's own tab URL — carries the host token (auto-admit as host). */
-export function hostUrl({ host, port, code, token }) {
-  return `http://${host}:${port}/${code}?host=${token}`;
+export function hostUrl({ base, host, port, code, token }) {
+  return `${origin({ base, host, port })}/${code}?host=${token}`;
 }
 
 /** The token-free invite URL — the safe link to share with guests. */
-export function inviteUrl({ host, port, code }) {
-  return `http://${host}:${port}/${code}`;
+export function inviteUrl({ base, host, port, code }) {
+  return `${origin({ base, host, port })}/${code}`;
 }
 
 /**

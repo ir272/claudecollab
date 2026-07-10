@@ -88,6 +88,10 @@ export function startRelay(opts = {}) {
     hostName = 'the host',
     knockTimeoutMs = DEFAULT_KNOCK_TIMEOUT_MS,
     ttlMs = DEFAULT_TTL_MS,
+    // The public browser-facing base URL of a DEPLOYED relay (e.g.
+    // "https://claude-share.fly.dev"). Sent to the host in the room grant so its
+    // printed/copied links carry the real https origin instead of host:webPort.
+    publicUrl,
     registry: registryOpts = {},
   } = opts;
 
@@ -188,7 +192,7 @@ export function startRelay(opts = {}) {
             seen: new Map(),
             hostTimer: null,
           });
-          safeWrite(stream, encode({ t: TYPES.ROOM, code }));
+          safeWrite(stream, encode({ t: TYPES.ROOM, code, ...(publicUrl ? { webUrl: publicUrl } : {}) }));
           return;
         }
         case TYPES.RECLAIM: {
@@ -216,7 +220,7 @@ export function startRelay(opts = {}) {
             safeEnd(oldStream);
             safeEnd(oldConn);
           }
-          safeWrite(stream, encode({ t: TYPES.ROOM, code }));
+          safeWrite(stream, encode({ t: TYPES.ROOM, code, ...(publicUrl ? { webUrl: publicUrl } : {}) }));
           // Re-sync every still-present guest's terminal size so the brain can
           // re-clamp the shared view (sizes may have changed during the outage).
           for (const rec of room.guests.values()) {

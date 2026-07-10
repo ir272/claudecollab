@@ -912,8 +912,11 @@ async function main() {
   // (carries the token → auto-admit as host); the token-free inviteUrl is the safe link
   // to hand a friend. The status line shows the hostUrl (the host's own private
   // terminal); the clipboard + the host tab's "copy invite" button use the inviteUrl.
-  const hostRoomUrl = (code) => hostUrl({ host: RELAY_HOST, port: opts.webPort, code, token: hostToken });
-  const inviteRoomUrl = (code) => inviteUrl({ host: RELAY_HOST, port: opts.webPort, code });
+  // A deployed relay advertises its public https origin in the room grant; links
+  // then print https://domain/room. Localhost dev has none → http://host:webPort.
+  let publicBase = null;
+  const hostRoomUrl = (code) => hostUrl({ base: publicBase, host: RELAY_HOST, port: opts.webPort, code, token: hostToken });
+  const inviteRoomUrl = (code) => inviteUrl({ base: publicBase, host: RELAY_HOST, port: opts.webPort, code });
 
   // Best-effort clipboard copy of the INVITE (never the host URL). Only reports success
   // once pbcopy has actually exited cleanly — macOS-only, opt-out via the env var, and
@@ -940,8 +943,9 @@ async function main() {
   // identically. Handlers use their own instance `r` for replies, so a stale
   // instance can never write to (or resurrect) a superseded connection.
   function wireRelay(r) {
-    r.onRoom((code) => {
+    r.onRoom((code, webUrl) => {
       reconnectAttempts = 0;
+      publicBase = webUrl || null; // a deployed relay's public https origin (or none)
       const reclaimed = state.room === code; // we already held this exact code → reclaim
       state.setRoom(code);
       currentUrl = hostRoomUrl(code); // the host's own tab URL lives in the status line

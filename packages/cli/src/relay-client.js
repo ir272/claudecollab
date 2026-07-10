@@ -130,7 +130,9 @@ export function connectRelay(opts = {}) {
     if (!validate(msg)) return;
     switch (msg.t) {
       case TYPES.ROOM:
-        return emit('room', msg.code);
+        // webUrl: the relay's PUBLIC browser base (a deployed relay behind TLS) —
+        // links must print https://domain/room, not http://ssh-host:webPort/room.
+        return emit('room', msg.code, msg.webUrl);
       case TYPES.GONE:
         return emit('gone', msg.code);
       case TYPES.KNOCK:

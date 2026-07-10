@@ -1,0 +1,54 @@
+# claude-share relay on Fly.io.
+#
+# First deploy (from the repo root):
+#   fly launch --no-deploy          # creates the app; KEEP this fly.toml when asked
+#   fly secrets set HOST_KEY="$(node packages/relay/bin/serve.js --make-key)"
+#   fly deploy
+#
+# If `fly launch` picks a different app name, update PUBLIC_URL below to match
+# (it must be the real public origin — it's what invite links print).
+#
+# Custom domain later:
+#   fly certs add claudeshare.dev   # then point DNS (CNAME → this app) as instructed
+#   ...and update PUBLIC_URL to https://claudeshare.dev
+
+app = "claude-share-relay"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  WEB_PORT = "8080"
+  SSH_PORT = "2222"
+  PUBLIC_URL = "https://claude-share-relay.fly.dev"
+
+# Browser door: TLS terminates at Fly's edge, plain http+ws reaches the relay.
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false   # rooms die if the relay sleeps — keep it up
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+# ssh door: raw TCP pass-through (the host CLI speaks the ssh protocol itself).
+[[services]]
+  internal_port = 2222
+  protocol = "tcp"
+  auto_stop_machines = false
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 2222
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
