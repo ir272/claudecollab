@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ssh2 from 'ssh2';
 import { startRelay } from '../../relay/server.js';
-import { connectRelay, parseRelayUrl } from './relay-client.js';
+import { connectRelay, parseRelayUrl, openingMove } from './relay-client.js';
 
 const { Client, utils } = ssh2;
 const { generateKeyPairSync, parseKey } = utils;
@@ -82,6 +82,12 @@ test('parseRelayUrl: scheme, host, port, and bare host:port forms', () => {
   assert.equal(typeof d.port, 'number');
 });
 
+test('openingMove: hello for a fresh connection, reclaim when a room is held', () => {
+  assert.deepEqual(openingMove(null), { t: 'hello' });
+  assert.deepEqual(openingMove(undefined), { t: 'hello' });
+  assert.deepEqual(openingMove('brave-otter'), { t: 'reclaim', code: 'brave-otter' });
+});
+
 test('relay-client: hello → room, knock → admit → guest sees broadcast bytes', async (t) => {
   const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
   t.after(() => relay.close());
@@ -137,6 +143,70 @@ test('relay-client: hello → room, knock → admit → guest sees broadcast byt
 
   // /end closes the room cleanly.
   relayClient.end();
+});
+
+test('relay-client: a dropped host reconnects and reclaims its room', async (t) => {
+  // The exact dance bin/claude-share.js runs on relay onClose: a fresh connection on
+  // the SAME key sends openingMove(heldRoom) === reclaim, the room comes back, and a
+  // guest who never left keeps receiving the reattached host's broadcasts.
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+  const url = `ssh://127.0.0.1:${relay.port}`;
+  const hostKey = newKey(); // stable identity — its fingerprint gates reclaim
+
+  const c1 = connectRelay({ url, privateKey: hostKey });
+  t.after(() => c1.close());
+  await c1.ready;
+  const roomP = once(c1.onRoom);
+  const first = openingMove(null); // no room yet → hello
+  assert.equal(first.t, 'hello');
+  c1.hello();
+  const code = await roomP;
+
+  // A guest joins and sees a broadcast.
+  const knockP = once(c1.onKnock);
+  const guest = await connectGuest(relay.port, { code, privateKey: newKey() });
+  t.after(() => {
+    try {
+      guest.client.end();
+    } catch {}
+  });
+  await guest.waitFor('pick a name');
+  guest.type('sid\r');
+  const knock = await knockP;
+  const joinP = once(c1.onJoin);
+  c1.admit(knock.id);
+  await joinP;
+  c1.sendScreen('BEFORE-DROP\r\n');
+  await guest.waitFor('BEFORE-DROP');
+
+  // Host's wifi drops: tear the connection down. The guest stays connected.
+  c1.close();
+
+  // Reconnect on the same key and RECLAIM the held room (openingMove says so).
+  const move = openingMove(code);
+  assert.deepEqual(move, { t: 'reclaim', code });
+  const c2 = connectRelay({ url, privateKey: hostKey });
+  t.after(() => c2.close());
+  await c2.ready;
+  const roomP2 = once(c2.onRoom);
+  const resizeP2 = once(c2.onResize);
+  c2.reclaim(move.code);
+  assert.equal(await roomP2, code, 'the same room is handed back on reclaim');
+  const rz = await resizeP2;
+  assert.equal(rz.id, knock.id, 'the still-present guest is re-synced to the reattached host');
+
+  // The reattached host reaches the guest that never left…
+  c2.sendScreen('BACK-ONLINE\r\n');
+  await guest.waitFor('BACK-ONLINE');
+
+  // …and the guest's keystrokes now flow to the new connection.
+  const keyP = once(c2.onKey);
+  guest.type('Z');
+  const k = await keyP;
+  assert.equal(k.data.toString('utf8'), 'Z');
+
+  c2.end();
 });
 
 test('relay-client: deny closes the knocking guest', async (t) => {

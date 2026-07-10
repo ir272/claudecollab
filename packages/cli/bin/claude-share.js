@@ -24,7 +24,7 @@ import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
 import { paint, ROLE_GLYPH, draftBox, queueBlock, knockLine } from '../src/renderer.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
-import { connectRelay, parseRelayUrl } from '../src/relay-client.js';
+import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js';
 import { RoomState, HOST_ID } from '../src/brain/state.js';
 import { Queue } from '../src/brain/queue.js';
 import { Log } from '../src/brain/log.js';
@@ -114,6 +114,12 @@ async function main() {
   const ui = { toast: null, toastTimer: null };
   let relay = null;
   let exited = false;
+  // Reconnect-with-reclaim state (spec §failure-behavior: the relay holds the code
+  // 10 min after a host drop). On a lost connection we reconnect and RECLAIM the
+  // room we still hold, rather than abandoning it.
+  let reconnectTimer = null;
+  let reconnectAttempts = 0;
+  const MAX_RECONNECT = 8;
 
   // ── hook-based state detection (Task 4) ─────────────────────────────────────
   const childArgs = [...opts.childArgs];
@@ -483,60 +489,112 @@ async function main() {
     repaintBand();
   };
 
-  if (opts.relay) {
-    try {
-      relay = connectRelay({ url: opts.relayUrl, privateKey: loadHostKey() });
-      relay.onRoom((code) => {
-        state.setRoom(code);
-        const { host: relayHost } = parseRelayUrl(opts.relayUrl);
-        showToast(`room ready · invite: ssh ${code}@${relayHost}`, 8000);
-      });
-      relay.onKnock((knock) => {
-        knockInfo.set(knock.id, { name: knock.name, fp: knock.fp });
-        pendingKnocks.push(knock);
-        repaintBand();
-      });
-      relay.onJoin((id) => {
-        const info = knockInfo.get(id) ?? { name: 'guest', fp: null };
-        // addGuest restores the role a returning fingerprint last held this session
-        // (spec §identity); a new/keyless guest takes the room default (opts.guests).
-        const g = state.addGuest(id, { name: info.name, fp: info.fp, role: opts.guests });
-        log.event(`${g.name} joined as ${g.role}`);
-        // The join context card lands in the guest's own scrollback before the
-        // live mirror attaches (spec §join context card).
-        try {
-          const card = buildCard(state, log, { joinerId: id, claudeState: claude.state });
-          relay.sendTo(id, card.replace(/\n/g, '\r\n') + '\r\n');
-        } catch {}
-        showToast(`${g.name} joined as ${g.role} ${ROLE_GLYPH[g.role] ?? ''}`);
-        recomputeClamp();
-      });
-      relay.onLeave((id) => forgetGuest(id));
-      relay.onKey(({ id, data }) => {
-        const role = state.roleOf(id) ?? 'viewer';
-        applyInput(id, dispatch(id, role, data, { armed, toasted }));
-      });
-      relay.onResize(({ id, cols, rows }) => {
-        state.setSize(id, cols, rows);
-        if (state.belowFloor(id)) {
-          relay.sendTo(id, '\x1b[2J\x1b[H  your terminal is below 80×24 — make it bigger to join the shared view\r\n');
-        }
-        recomputeClamp();
-        repaintBand();
-      });
-      relay.onClose(() => {
-        if (!exited) showToast('relay disconnected — running solo', 8000);
-      });
-      relay.onError(() => {}); // transport errors surface via onClose; never crash
-      relay.ready.then(() => relay.hello()).catch((err) => {
-        process.stderr.write(`claude-share: relay unavailable (${err.message}); running solo\n`);
-        relay = null;
-      });
-    } catch (err) {
-      process.stderr.write(`claude-share: relay setup failed (${err.message}); running solo\n`);
+  const RELAY_HOST = parseRelayUrl(opts.relayUrl).host;
+
+  // Attach every relay→brain handler to one relay instance. Reused verbatim for the
+  // initial connection and each reconnect, so a reattached connection behaves
+  // identically. Handlers use their own instance `r` for replies, so a stale
+  // instance can never write to (or resurrect) a superseded connection.
+  function wireRelay(r) {
+    r.onRoom((code) => {
+      reconnectAttempts = 0;
+      const reclaimed = state.room === code; // we already held this exact code → reclaim
+      state.setRoom(code);
+      if (reclaimed) showToast('reconnected — room reclaimed', 6000);
+      else showToast(`room ready · invite: ssh ${code}@${RELAY_HOST}`, 8000);
+    });
+    r.onGone(() => {
+      // Reclaim refused: the 10-min TTL lapsed or the room truly ended. Nothing to
+      // return to — drop the code so onClose won't keep retrying, and finish solo.
+      state.setRoom(null);
+      showToast('the room expired while disconnected — continuing solo', 8000);
+    });
+    r.onKnock((knock) => {
+      knockInfo.set(knock.id, { name: knock.name, fp: knock.fp });
+      pendingKnocks.push(knock);
+      repaintBand();
+    });
+    r.onJoin((id) => {
+      const info = knockInfo.get(id) ?? { name: 'guest', fp: null };
+      // addGuest restores the role a returning fingerprint last held this session
+      // (spec §identity); a new/keyless guest takes the room default (opts.guests).
+      const g = state.addGuest(id, { name: info.name, fp: info.fp, role: opts.guests });
+      log.event(`${g.name} joined as ${g.role}`);
+      // The join context card lands in the guest's own scrollback before the
+      // live mirror attaches (spec §join context card).
+      try {
+        const card = buildCard(state, log, { joinerId: id, claudeState: claude.state });
+        r.sendTo(id, card.replace(/\n/g, '\r\n') + '\r\n');
+      } catch {}
+      showToast(`${g.name} joined as ${g.role} ${ROLE_GLYPH[g.role] ?? ''}`);
+      recomputeClamp();
+    });
+    r.onLeave((id) => forgetGuest(id));
+    r.onKey(({ id, data }) => {
+      const role = state.roleOf(id) ?? 'viewer';
+      applyInput(id, dispatch(id, role, data, { armed, toasted }));
+    });
+    r.onResize(({ id, cols, rows }) => {
+      state.setSize(id, cols, rows);
+      if (state.belowFloor(id)) {
+        r.sendTo(id, '\x1b[2J\x1b[H  your terminal is below 80×24 — make it bigger to join the shared view\r\n');
+      }
+      recomputeClamp();
+      repaintBand();
+    });
+    r.onClose(() => {
+      if (exited || r !== relay) return; // a superseded instance's close is not ours
       relay = null;
-    }
+      scheduleReconnect();
+    });
+    r.onError(() => {}); // transport errors surface via onClose; never crash
   }
+
+  // Open (or reopen) the relay connection. On ready, hello for a fresh room or
+  // RECLAIM the one we still hold (spec §failure-behavior) — this is the reclaim the
+  // CLI was missing. Failures on a held room retry within the TTL; an initial
+  // failure just runs solo.
+  function openRelay() {
+    if (exited) return;
+    let r;
+    try {
+      r = connectRelay({ url: opts.relayUrl, privateKey: loadHostKey() });
+    } catch (err) {
+      if (state.room) return scheduleReconnect();
+      process.stderr.write(`claude-share: relay setup failed (${err.message}); running solo\n`);
+      return;
+    }
+    relay = r;
+    wireRelay(r);
+    r.ready
+      .then(() => {
+        const move = openingMove(state.room);
+        if (move.t === 'reclaim') r.reclaim(move.code);
+        else r.hello();
+      })
+      .catch((err) => {
+        if (r === relay) relay = null;
+        if (state.room) scheduleReconnect(); // lost a held room — keep trying within TTL
+        else process.stderr.write(`claude-share: relay unavailable (${err.message}); running solo\n`);
+      });
+  }
+
+  // A dropped connection: if we still hold a room, back off and reconnect to reclaim
+  // it; otherwise there is nothing to return to, so go solo.
+  function scheduleReconnect() {
+    if (exited) return;
+    if (!state.room) return showToast('relay disconnected — running solo', 8000);
+    if (reconnectAttempts >= MAX_RECONNECT) {
+      return showToast('could not reconnect to the relay — continuing solo', 8000);
+    }
+    reconnectAttempts++;
+    showToast(`relay disconnected — reconnecting to reclaim the room (${reconnectAttempts}/${MAX_RECONNECT})…`, 8000);
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(openRelay, reconnectAttempts === 1 ? 300 : 1500);
+    reconnectTimer.unref?.();
+  }
+
+  if (opts.relay) openRelay();
 
   // ── hook events → brain ───────────────────────────────────────────────────────
   if (hooks) {
@@ -586,6 +644,7 @@ async function main() {
   const cleanup = (code) => {
     if (exited) return;
     exited = true;
+    clearTimeout(reconnectTimer); // stop any pending reclaim attempt
     try {
       if (stdin.isTTY) stdin.setRawMode(false);
     } catch {}

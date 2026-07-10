@@ -43,6 +43,20 @@ export function parseRelayUrl(url) {
 const toB64 = (data) => (Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8')).toString('base64');
 
 /**
+ * The opening protocol move for a (re)connection once it is ready: ask for a fresh
+ * room when we hold none, or RECLAIM the room we already own after a drop (spec
+ * §failure-behavior: "reconnect with the same key restores identity + role; relay
+ * holds the code 10 min"). bin/claude-share.js calls this each time a relay
+ * connection becomes ready, so an initial connect says hello and every reconnect
+ * reclaims — the piece the CLI was missing.
+ * @param {string|null|undefined} heldRoom the room code we currently hold, if any
+ * @returns {{t:'hello'} | {t:'reclaim', code:string}}
+ */
+export function openingMove(heldRoom) {
+  return heldRoom ? { t: 'reclaim', code: heldRoom } : { t: 'hello' };
+}
+
+/**
  * Connect to the relay as the host and return an event/command handle.
  *
  * @param {object} opts
