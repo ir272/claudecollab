@@ -10,11 +10,13 @@
 //      (prompt vs Claude slash vs bash vs claude-share command) and may this role
 //      send it? (Composing is prompter+, but only driver+ may fire /clear or !ls.)
 //
-// Fail closed: a DRIVER's y/n routes to Claude ONLY when ctx.armed is true (an
-// 'ask' Notification is pending); if we are not certain an ask is up, a driver's
-// "y" is just a character typed into their draft. The HOST is the escape hatch —
-// its y/n always forwards (armed or not) so a missed hook can never leave a real
-// on-screen ask unanswerable (spec §fail-closed: y/n accepted from the host only).
+// Fail closed: a y/n routes to Claude ONLY when ctx.armed is true (an 'ask'
+// Notification is pending) AND the sender is driver or host. If we are not certain
+// an ask is up, a lone "y"/"n" is just a character typed into a draft — even from
+// the host — so a bare keystroke can never leak to Claude by accident. The host
+// typing "yes, ship it" while composing must land in the draft, not answer a
+// non-existent ask (spec §fail-closed: y/n is a permission answer, never a stray
+// draft char).
 
 import { atLeast } from './state.js';
 import { COMMAND_NAMES } from './commands.js';
@@ -64,13 +66,12 @@ export function dispatch(userId, role, bytes, ctx = {}) {
     return atLeast(role, 'prompter') ? { kind: 'pty', data: s } : viewerBlock(userId, toasted);
   }
 
-  // y/n answering a permission ask. The host is the escape hatch: it may always
-  // answer, armed or not, so a missed Notification hook (or --no-hooks) can never
-  // leave a real on-screen ask unanswerable and deadlock the room (spec §fail-
-  // closed: when state is ambiguous, y/n is accepted from the host only). A driver
-  // may answer too, but only while we KNOW an ask is pending (armed); otherwise a
-  // driver's y/n is just draft typing (fail closed).
-  if (/^[yn]$/i.test(s) && (role === 'host' || (armed && atLeast(role, 'driver')))) {
+  // y/n answering a permission ask — driver and up, and ONLY while a permission ask
+  // is armed (an 'ask' Notification is pending). Fail closed: when we are not certain
+  // an ask is up, a lone y/n is ordinary draft input for everyone — the host too — so
+  // "yes, ship it" typed while composing is never leaked to Claude as a bare
+  // keystroke (spec §fail-closed: y/n is a permission answer, not a stray draft char).
+  if (/^[yn]$/i.test(s) && armed && atLeast(role, 'driver')) {
     return { kind: 'pty', data: s };
   }
 
