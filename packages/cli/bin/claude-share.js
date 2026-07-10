@@ -223,6 +223,10 @@ async function main() {
   // Claude a repaint, so only on an actual change).
   let appliedCols = null;
   let appliedChildRows = null;
+  // Ghost-band cleanup state (see repaintBand): the shared rows we last painted at,
+  // and whether a clamp shrink still needs its below-region erase delivered.
+  let lastPaintRows = null;
+  let pendingClearBelow = false;
 
   // The band is part of the ONE live screen (spec §how-a-session-works): the same
   // painted band goes to the host's stdout and, mirrored, to every eligible guest —
@@ -248,9 +252,21 @@ async function main() {
       } catch {}
     }
 
-    const painted = paint(bandState(cols, rows, band, dyn));
+    let painted = paint(bandState(cols, rows, band, dyn));
+    // Ghost-band cleanup: when the shared clamp SHRINKS, rows below the new region
+    // keep stale band paint on any terminal taller than the new clamp. Erase below
+    // the region BEFORE repainting (order matters: on a terminal exactly `rows`
+    // tall the erase clips to the band's last row, and the repaint restores it).
+    // The flag persists until a repaint actually reaches guests (pause suppresses
+    // the mirror, and a ghost must not outlive the pause).
+    if (lastPaintRows !== null && rows < lastPaintRows) pendingClearBelow = true;
+    lastPaintRows = rows;
+    if (pendingClearBelow) {
+      painted = `\x1b7\x1b[${rows + 1};1H\x1b[0J\x1b8` + painted;
+      if (!state.paused) pendingClearBelow = false;
+    }
     if (stdout.isTTY) stdout.write(painted);
-    if (relay && multiplayer && !state.paused) mirror(painted);
+    mirror(painted); // mirror() owns the relay/multiplayer/paused checks
   };
 
   const showToast = (msg, ms = 4000) => {
@@ -588,8 +604,14 @@ async function main() {
       // mirror only forwards frames produced after this join, so without the
       // snapshot a guest admitted while Claude is idle would see nothing (finding 1).
       try {
-        const snap = snapshot.get();
-        if (snap) r.sendTo(id, snap);
+        if (state.paused) {
+          // The snapshot is exactly what /pause promises to hide — a joiner during
+          // a pause gets the hold card, and the live screen on /resume.
+          r.sendTo(id, '\r\n⏸ sharing is paused — the live screen will appear when the host resumes\r\n');
+        } else {
+          const snap = snapshot.get();
+          if (snap) r.sendTo(id, snap);
+        }
       } catch {}
       showToast(`${g.name} joined as ${g.role} ${ROLE_GLYPH[g.role] ?? ''}`);
       recomputeClamp();
