@@ -30,12 +30,16 @@ npm install
 ```bash
 node -e '
   import("./packages/relay/server.js").then(async ({ startRelay }) => {
-    const { utils } = (await import("ssh2")).default;
-    const relay = await startRelay({
-      port: 2222,
-      hostName: "dev",
-      hostKey: utils.generateKeyPairSync("ed25519").private,
-    });
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const keyPath = os.homedir() + "/.claude-share-dev-hostkey";
+    // One identity for life: a fresh key per launch makes ssh scream
+    // "REMOTE HOST IDENTIFICATION HAS CHANGED" at every guest after a restart.
+    if (!fs.existsSync(keyPath)) {
+      const { utils } = (await import("ssh2")).default;
+      fs.writeFileSync(keyPath, utils.generateKeyPairSync("ed25519").private, { mode: 0o600 });
+    }
+    const relay = await startRelay({ port: 2222, hostName: "dev", hostKeyPath: keyPath });
     console.log("relay listening on port", relay.port);
   });
 '
