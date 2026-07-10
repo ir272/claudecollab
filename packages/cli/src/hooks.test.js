@@ -155,6 +155,38 @@ test('mode updates as later UserPromptSubmit payloads change it', async () => {
   }
 });
 
+test('a mode flip is picked up from ANY hook payload, not only UserPromptSubmit', async () => {
+  const sock = tmpSock();
+  const hooks = listenHooks(sock);
+  await hooks.ready;
+  try {
+    // First turn establishes the mode.
+    let p = nextEvent(hooks, 'busy');
+    await post(sock, 'UserPromptSubmit', { permission_mode: 'default' });
+    await p;
+    assert.equal(hooks.mode, 'default');
+
+    // Now the operator flips the mode (Shift+Tab) mid-turn. The NEXT hook to fire is
+    // a PostToolUse carrying the new permission_mode — the banner must update here,
+    // without waiting for the next UserPromptSubmit.
+    const mode = nextEvent(hooks, 'mode');
+    await post(sock, 'PostToolUse', {
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      permission_mode: 'bypassPermissions',
+    });
+    assert.equal(await mode, 'bypassPermissions', 'mode event fires off a PostToolUse payload');
+    assert.equal(hooks.mode, 'bypassPermissions');
+
+    // A Stop payload carrying the mode is honored too (another non-prompt signal).
+    const mode2 = nextEvent(hooks, 'mode');
+    await post(sock, 'Stop', { permission_mode: 'acceptEdits' });
+    assert.equal(await mode2, 'acceptEdits');
+  } finally {
+    await hooks.close();
+  }
+});
+
 test('listener emits idle on Stop and tool on PostToolUse', async () => {
   const sock = tmpSock();
   const hooks = listenHooks(sock);

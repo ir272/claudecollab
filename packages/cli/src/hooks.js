@@ -144,7 +144,7 @@ export class HookListener extends EventEmitter {
     if (typeof this.#server.unref === 'function') this.#server.unref();
   }
 
-  /** The last permission_mode seen on a UserPromptSubmit payload (null until first turn). */
+  /** The last permission_mode seen on any hook payload (null until the first hook). */
   get mode() {
     return this.#mode;
   }
@@ -195,9 +195,14 @@ export class HookListener extends EventEmitter {
     if (!payload || typeof payload !== 'object') payload = {};
 
     const event = mapHookEvent(hook, payload);
-    // permission_mode rides on UserPromptSubmit (spec: mode tracking for free).
-    // Update it before emitting so a 'busy' handler reading .mode sees the fresh value.
-    if (event === 'busy' && typeof payload.permission_mode === 'string' && payload.permission_mode !== this.#mode) {
+    // permission_mode rides on EVERY hook payload (spec: mode tracking for free), so
+    // track it from any hook — not only UserPromptSubmit. A mode flip (Shift+Tab)
+    // then surfaces the moment the next hook of any kind fires (Stop, PostToolUse, a
+    // permission Notification, or the next prompt), so the room's mode-change warning
+    // banner is raised on the mode-change signal itself rather than waiting for the
+    // next UserPromptSubmit. Update before emitting so an event handler reading .mode
+    // sees the fresh value.
+    if (typeof payload.permission_mode === 'string' && payload.permission_mode !== this.#mode) {
       this.#mode = payload.permission_mode;
       this.emit('mode', this.#mode);
     }
