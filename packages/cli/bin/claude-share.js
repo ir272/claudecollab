@@ -758,9 +758,27 @@ async function main() {
         } catch {}
       }
     }
-    stdout.write('\x1b[?1049l\r\n[claude-share exited]\r\n');
+    stdout.write(TERM_RESTORE + '\r\n[claude-share exited]\r\n');
     process.exit(code ?? 0);
   };
+
+  // Undo every terminal mode the child may have enabled on the REAL terminal via
+  // passthrough — kitty keyboard, mouse tracking (the "35;138;1M" spam if left on),
+  // focus events, bracketed paste — then show the cursor and leave the alt screen.
+  // Dying without this leaves the user's shell receiving mouse coordinates.
+  const TERM_RESTORE =
+    '\x1b[<u' + // pop kitty keyboard flags
+    '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l' + // mouse tracking off
+    '\x1b[?1004l' + // focus reporting off
+    '\x1b[?2004l' + // bracketed paste off
+    '\x1b[?25h' + // cursor visible
+    '\x1b[?1049l'; // leave the alternate screen
+
+  // pkill/kill and a closing terminal tab must restore the terminal too — without
+  // these handlers, SIGTERM/SIGHUP skip cleanup entirely (dogfood finding).
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+    process.on(sig, () => cleanup(0));
+  }
 
   // ── passthrough + broadcast ────────────────────────────────────────────────────
   // Write every Claude frame locally; mirror it to guests unless paused. The band
@@ -807,6 +825,7 @@ async function main() {
   process.on('exit', () => {
     try {
       if (stdin.isTTY) stdin.setRawMode(false);
+      if (stdout.isTTY) stdout.write(TERM_RESTORE);
     } catch {}
   });
 
