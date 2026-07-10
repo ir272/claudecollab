@@ -16,11 +16,16 @@
 const ESC = '\x1b';
 
 // Complete chatter sequences, anchored at an ESC.
+// Input-side replies to queries ALWAYS use openers human keys never use:
+// ESC[? (DEC replies: DA1 `c`, DECRQM `$y`, kitty-keyboard `u`, DSR-DEC `n`),
+// ESC[> (DA2/XTMODKEYS replies), ESC[< (SGR mouse). Kitty-protocol KEY events
+// (ESC[97;5u — no `?`) stay human.
 const CHATTER = [
-  /^\x1b\[\?[\d;]*c/, // DA1 reply: ESC [ ? 62;22;52 c
-  /^\x1b\[>[\d;]*c/, // DA2 reply: ESC [ > 1;10;0 c
-  /^\x1b\[[\d;]*R/, // cursor position report
+  /^\x1b\[\?[\d;]*(?:\$[a-zA-Z]|[a-zA-Z])/, // any ESC[?…reply (DECRQM $y caught in dogfood)
+  /^\x1b\[>[\d;]*[a-zA-Z]/, // any ESC[>…reply (DA2 etc.)
   /^\x1b\[<[\d;]+[Mm]/, // SGR mouse report
+  /^\x1b\[[\d;]*R/, // cursor position report
+  /^\x1b\[48;[\d;]*t/, // in-band size report (mode 2048, e.g. Ghostty)
   /^\x1b\[[IO]/, // focus in / out
   /^\x1bP[^\x1b\x07]*(?:\x1b\\|\x07)/, // DCS reply (e.g. XTVERSION: ESC P > | ghostty 1.3.1 ESC \)
   /^\x1b\][^\x1b\x07]*(?:\x1b\\|\x07)/, // OSC reply (color queries etc.)
@@ -28,7 +33,7 @@ const CHATTER = [
 
 // Could this tail still become a chatter sequence with more bytes?
 // Conservative prefix test: ESC alone, or ESC + opener + params with no final.
-const MAYBE_PREFIX = /^\x1b(?:$|\[(?:$|[<>?]?[\d;]*$)|P[^\x1b\x07]*$|\][^\x1b\x07]*$|P[^\x1b\x07]*\x1b$|\][^\x1b\x07]*\x1b$)/;
+const MAYBE_PREFIX = /^\x1b(?:$|\[(?:$|[<>?]?[\d;$]*$)|P[^\x1b\x07]*$|\][^\x1b\x07]*$|P[^\x1b\x07]*\x1b$|\][^\x1b\x07]*\x1b$)/;
 
 export function partitionInput(s) {
   let chatter = '';

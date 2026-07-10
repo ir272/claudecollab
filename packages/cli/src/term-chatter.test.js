@@ -48,6 +48,30 @@ test('bracketed paste guards stay human', () => {
   assert.equal(r.chatter, '');
 });
 
+test('DECRQM reply is chatter (the second dogfood bug: [?2026;2$y in the draft)', () => {
+  const r = partitionInput('\x1b[?2026;2$y');
+  assert.equal(r.chatter, '\x1b[?2026;2$y');
+  assert.equal(r.human, '');
+});
+
+test('kitty keyboard query reply and DSR-DEC reply are chatter', () => {
+  const r = partitionInput('\x1b[?1u\x1b[?62;4n');
+  assert.equal(r.chatter, '\x1b[?1u\x1b[?62;4n');
+  assert.equal(r.human, '');
+});
+
+test('kitty-protocol KEY event (no ?) stays human', () => {
+  const r = partitionInput('\x1b[97;5u');
+  assert.equal(r.human, '\x1b[97;5u');
+  assert.equal(r.chatter, '');
+});
+
+test('in-band size report (mode 2048) is chatter', () => {
+  const r = partitionInput('\x1b[48;32;120;640;1280t');
+  assert.equal(r.chatter, '\x1b[48;32;120;640;1280t');
+  assert.equal(r.human, '');
+});
+
 test('mixed chunk: typing interleaved with mouse reports', () => {
   const r = partitionInput('fix\x1b[<35;10;4M the bug\x1b[?62c!');
   assert.equal(r.human, 'fix the bug!');
