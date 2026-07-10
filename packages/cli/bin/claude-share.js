@@ -27,7 +27,7 @@ import { ScreenSnapshot } from '../src/screen-snapshot.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
 import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js';
 import { createPartitioner } from '../src/term-chatter.js';
-import { RoomState, HOST_ID } from '../src/brain/state.js';
+import { RoomState, HOST_ID, atLeast } from '../src/brain/state.js';
 import { Queue } from '../src/brain/queue.js';
 import { Log } from '../src/brain/log.js';
 import { Drafts } from '../src/brain/drafts.js';
@@ -114,6 +114,7 @@ async function main() {
   const drafts = new Drafts();
   const toasted = new Set(); // userIds already shown the viewer toast
   const knockInfo = new Map(); // id -> {name, fp} captured at knock time
+  const pointers = new Map(); // userId -> {x, y} normalized 0..1 (browser cursors)
   const claude = { state: 'idle' };
   let armed = false; // true only while a permission ask is pending (hook-armed)
   let pendingKnocks = []; // FIFO of {id,name,fp,seen} awaiting the host's y/n
@@ -218,6 +219,48 @@ async function main() {
     else for (const id of state.mirrorTargets()) relay.sendTo(id, data);
   };
 
+  // ── overlay state (the browser multiplayer surface) ──────────────────────────
+  // The brain assembles a full snapshot the relay fans out to browser views: who's
+  // here (with stable per-fingerprint colors), the shared drafts (cursors+authors),
+  // the attributed queue, Claude's state, pause, live pointers, and the pending
+  // knocks (the host admits from the browser). Everything is in userId-space —
+  // `participants` is the id → {name, role, color} lookup the view joins against.
+  const buildState = () => ({
+    room: state.room,
+    participants: state.list().map((p) => ({ id: p.id, name: p.name, role: p.role, color: p.color })),
+    drafts: drafts.snapshot(),
+    queue: queue.items.map((it, i) => ({ n: i + 1, author: it.author, text: it.text })),
+    claudeState: claude.state,
+    paused: state.paused,
+    pointers: Object.fromEntries(
+      [...pointers]
+        .filter(([id]) => state.get(id)) // drop a pointer whose owner has left
+        .map(([id, p]) => [id, { x: p.x, y: p.y, name: nameOf(id), color: state.colorOf(id) }]),
+    ),
+    knocks: pendingKnocks.map((k) => ({ id: k.id, name: k.name, fp: k.fp, seen: k.seen })),
+  });
+
+  // Emit at most one state frame per 50ms: fire immediately when outside the window,
+  // otherwise coalesce a burst into a single trailing emit at the window's end.
+  const STATE_THROTTLE_MS = 50;
+  let stateTimer = null;
+  let lastStateAt = 0;
+  const emitState = () => {
+    if (!relay || !multiplayer) return;
+    lastStateAt = Date.now();
+    relay.sendState(buildState());
+  };
+  const scheduleState = () => {
+    if (!relay || !multiplayer || stateTimer) return;
+    const wait = STATE_THROTTLE_MS - (Date.now() - lastStateAt);
+    if (wait <= 0) return emitState();
+    stateTimer = setTimeout(() => {
+      stateTimer = null;
+      emitState();
+    }, wait);
+    stateTimer.unref?.();
+  };
+
   // The child PTY size we last applied. The band height is dynamic, so we resize
   // Claude's region whenever the band or the shared width changes (each resize costs
   // Claude a repaint, so only on an actual change).
@@ -267,6 +310,7 @@ async function main() {
     }
     if (stdout.isTTY) stdout.write(painted);
     mirror(painted); // mirror() owns the relay/multiplayer/paused checks
+    scheduleState(); // repaintBand is the brain's "something changed" chokepoint
   };
 
   const showToast = (msg, ms = 4000) => {
@@ -376,6 +420,7 @@ async function main() {
         drafts.removeUser(targetId);
         queue.removeByAuthor(targetId);
         knockInfo.delete(targetId);
+        pointers.delete(targetId);
         recomputeClamp();
         const msg = `${name} was kicked`;
         log.event(msg);
@@ -495,6 +540,7 @@ async function main() {
     queue.removeByAuthor(id);
     pendingKnocks = pendingKnocks.filter((k) => k.id !== id);
     knockInfo.delete(id);
+    pointers.delete(id);
     recomputeClamp();
     log.event(`${name} left`);
     showToast(`${name} left`);
@@ -532,15 +578,37 @@ async function main() {
   };
 
   // ── relay client (Task 5 transport, Task 7 brain) ────────────────────────────
-  const answerKnock = (admitYes) => {
-    const knock = pendingKnocks.shift();
-    if (!knock || !relay) return;
+  // Resolve a specific pending knock by id. The host terminal answers the head of
+  // the FIFO with y/n; the browser (via a {t:'ui'} button) admits a chosen knock,
+  // since state.knocks shows them all (spec verdict: the host admits from the browser).
+  const answerKnockById = (knockId, admitYes) => {
+    const idx = pendingKnocks.findIndex((k) => k.id === knockId);
+    if (idx === -1 || !relay) return;
+    const [knock] = pendingKnocks.splice(idx, 1);
     if (admitYes) relay.admit(knock.id);
     else {
       relay.deny(knock.id);
       showToast(`declined ${knock.name}`);
     }
     repaintBand();
+  };
+  const answerKnock = (admitYes) => {
+    if (pendingKnocks[0]) answerKnockById(pendingKnocks[0].id, admitYes);
+  };
+
+  // A browser button command from guest `id`, executed AS that sender so the role
+  // gate still applies (verdict: browser tabs are labeled input sources; the brain
+  // stays the single authority). Admit/deny is a host action; a command runs the
+  // exact draft-send path (classify → gate → route).
+  const handleUi = (id, action) => {
+    if (!action || typeof action !== 'object') return;
+    const role = state.roleOf(id) ?? 'viewer';
+    if (action.kind === 'admit' || action.kind === 'deny') {
+      if (!atLeast(role, 'host')) return notify(id, 'only the host can admit or deny knocks');
+      answerKnockById(action.id, action.kind === 'admit');
+      return;
+    }
+    if (action.kind === 'command') routeSend(id, { text: String(action.text) });
   };
 
   const { host: RELAY_HOST, port: RELAY_PORT } = parseRelayUrl(opts.relayUrl);
@@ -629,6 +697,12 @@ async function main() {
       const role = state.roleOf(id) ?? 'viewer';
       applyInput(id, dispatch(id, role, Buffer.from(human, 'binary'), { armed, toasted }));
     });
+    r.onPointer(({ id, x, y }) => {
+      if (!id || !state.get(id)) return; // only a known participant's cursor
+      pointers.set(id, { x, y });
+      scheduleState(); // rebroadcast via state.pointers (spec); no band repaint needed
+    });
+    r.onUi(({ id, action }) => handleUi(id, action));
     r.onResize(({ id, cols, rows }) => {
       state.setSize(id, cols, rows);
       if (state.belowFloor(id)) {

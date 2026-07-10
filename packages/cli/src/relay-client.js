@@ -8,8 +8,8 @@
 // only frames messages and surfaces relay events as callbacks. It deliberately
 // knows nothing about drafts, roles, or the band.
 //
-//   host→relay: hello / reclaim / admit / deny / screen / to / drop / end
-//   relay→host: room / gone / knock / joined / left / key / resize
+//   host→relay: hello / reclaim / admit / deny / screen / to / drop / end / state
+//   relay→host: room / gone / knock / joined / left / key / resize / pointer / ui
 //
 // The host's ssh key is a stable identity: its fingerprint gates room reclaim on
 // the relay (spec §failure-behavior), so callers pass a persistent privateKey.
@@ -66,10 +66,10 @@ export function openingMove(heldRoom) {
  * @param {number} [opts.keepaliveInterval]  ssh keepalive ms (default 20s)
  * @returns {{
  *   ready: Promise<void>,
- *   onRoom, onGone, onKnock, onJoin, onLeave, onKey, onResize, onClose, onError,
+ *   onRoom, onGone, onKnock, onJoin, onLeave, onKey, onResize, onPointer, onUi, onClose, onError,
  *   hello():void, reclaim(code):void,
  *   admit(id):void, deny(id):void,
- *   sendScreen(data):void, sendTo(id,data):void,
+ *   sendScreen(data):void, sendTo(id,data):void, sendState(data):void,
  *   drop(id,ban):void, end():void, close():void
  * }}
  */
@@ -93,6 +93,8 @@ export function connectRelay(opts = {}) {
     leave: new Set(),
     key: new Set(),
     resize: new Set(),
+    pointer: new Set(),
+    ui: new Set(),
     close: new Set(),
     error: new Set(),
   };
@@ -141,7 +143,12 @@ export function connectRelay(opts = {}) {
         return emit('key', { id: msg.id, data: Buffer.from(msg.data, 'base64') });
       case TYPES.RESIZE:
         return emit('resize', { id: msg.id, cols: msg.cols, rows: msg.rows });
-      // host→relay types (hello/admit/screen/…) never arrive here; ignore.
+      // Browser-view inputs, labeled by the relay with the sending guest's id.
+      case TYPES.POINTER:
+        return emit('pointer', { id: msg.id, x: msg.x, y: msg.y });
+      case TYPES.UI:
+        return emit('ui', { id: msg.id, action: msg.action });
+      // host→relay types (hello/admit/screen/state/…) never arrive here; ignore.
       default:
         return;
     }
@@ -198,6 +205,8 @@ export function connectRelay(opts = {}) {
     onLeave: on(sets.leave), // (id)                       a guest disconnected
     onKey: on(sets.key), // ({id, data:Buffer})            guest keystrokes, labeled
     onResize: on(sets.resize), // ({id, cols, rows})       guest terminal size
+    onPointer: on(sets.pointer), // ({id, x, y})           browser cursor move (normalized)
+    onUi: on(sets.ui), // ({id, action})                   browser button command, labeled
     onClose: on(sets.close), // ()                         the control channel closed
     onError: on(sets.error), // (err)                      ssh transport error
 
@@ -207,6 +216,7 @@ export function connectRelay(opts = {}) {
     deny: (id) => send({ t: TYPES.DENY, id }),
     sendScreen: (data) => send({ t: TYPES.SCREEN, data: toB64(data) }),
     sendTo: (id, data) => send({ t: TYPES.TO, id, data: toB64(data) }),
+    sendState: (data) => send({ t: TYPES.STATE, data }),
     drop: (id, ban = false) => send({ t: TYPES.DROP, id, ban: !!ban }),
     end: () => send({ t: TYPES.END }),
 
