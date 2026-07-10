@@ -16,6 +16,7 @@ import ssh2 from 'ssh2';
 import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { createRegistry } from './rooms.js';
+import { startWebDoor } from './web.js';
 import { TYPES, encode, validate, Decoder } from '../shared/protocol.js';
 
 const { Server, utils } = ssh2;
@@ -66,6 +67,7 @@ function safeEnd(obj) {
  *
  * @param {object} opts
  * @param {number} [opts.port]              listen port (0 ⇒ ephemeral; spec prod: 22 & 443)
+ * @param {number} [opts.webPort]           when set, also open the browser door (http + ws) on this port
  * @param {string} [opts.host]              bind address (default 127.0.0.1)
  * @param {string} [opts.hostKeyPath]       path to the ssh host private key
  * @param {string|Buffer} [opts.hostKey]    host private key inline (alternative to hostKeyPath)
@@ -78,6 +80,7 @@ function safeEnd(obj) {
 export function startRelay(opts = {}) {
   const {
     port = 0,
+    webPort,
     host = '127.0.0.1',
     hostKeyPath,
     hostKey,
@@ -98,6 +101,7 @@ export function startRelay(opts = {}) {
   //   seen:    Map<fp, name> fingerprints seen this room (for the `seen` field)
   const live = new Map();
   const conns = new Set(); // every open ssh connection, for a clean shutdown
+  let webDoor = null; // the browser door (http + ws), started below when opts.webPort is set
 
   function findRec(room, id) {
     return room.guests.get(id) ?? room.pending.get(id);
@@ -235,6 +239,10 @@ export function startRelay(opts = {}) {
           room.pending.delete(rec.id);
           room.guests.set(rec.id, rec);
           rec.phase = 'live';
+          // A web participant has no terminal knock screen to clear, so it gets an
+          // explicit 'joined' text frame — its cue to switch from the knock view to
+          // the live session (screen bytes + state follow). ssh guests need none.
+          if (rec.kind === 'web') rec.sendText(JSON.stringify({ t: TYPES.JOINED, id: rec.id }));
           // No "you're live" seam here: the host's join context card (sent next, via
           // TO) already ends with one. Writing it here too printed the separator
           // twice around the card (finding 4) — the card owns the single seam now.
@@ -265,6 +273,17 @@ export function startRelay(opts = {}) {
           const room = live.get(code);
           const rec = room && room.guests.get(msg.id);
           if (rec) safeWrite(rec.stream, Buffer.from(msg.data, 'base64'));
+          return;
+        }
+        case TYPES.STATE: {
+          // The overlay snapshot is for browser views only (ssh guests render raw
+          // screen bytes). Fan it out to every live web participant as a text frame.
+          const room = live.get(code);
+          if (!room) return;
+          const line = JSON.stringify(msg);
+          for (const rec of room.guests.values()) {
+            if (rec.kind === 'web' && rec.phase === 'live') rec.sendText(line);
+          }
           return;
         }
         case TYPES.DROP: {
@@ -509,6 +528,7 @@ export function startRelay(opts = {}) {
     for (const code of [...live.keys()]) closeRoom(code, COPY.ended);
     for (const conn of [...conns]) safeEnd(conn);
     server.close();
+    webDoor?.close();
   }
 
   return new Promise((resolve, reject) => {
@@ -516,7 +536,28 @@ export function startRelay(opts = {}) {
     server.listen(port, host, function () {
       server.removeListener('error', reject);
       server.on('error', () => {}); // post-listen errors shouldn't crash the process
-      resolve({ close, port: this.address().port, address: this.address() });
+      const address = this.address();
+      const done = (web) => {
+        webDoor = web;
+        resolve({
+          close,
+          port: address.port,
+          address,
+          webPort: web ? web.port : null,
+          webAddress: web ? web.address : null,
+        });
+      };
+      // The browser door shares this relay's live rooms + registry, so web
+      // participants are real room members subject to the same knock/ban/cap.
+      if (webPort == null) return done(null);
+      startWebDoor({ port: webPort, host, live, registry, knockTimeoutMs, onGuestGone, safeWrite }).then(done, (err) => {
+        try {
+          close();
+        } catch {
+          /* nothing to unwind */
+        }
+        reject(err);
+      });
     });
   });
 }
