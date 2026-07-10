@@ -5,9 +5,10 @@
 // Two jobs, both dumb on purpose (the brain stays in the host CLI):
 //
 //   1. HTTP static: GET / and GET /<roomCode> serve packages/relay/public/index.html
-//      (whatever T3 has built there); GET /assets/* serves the vendored @xterm/xterm
-//      files straight out of node_modules — path-traversal safe (resolved and pinned
-//      inside the package dir).
+//      (the SPA entry); GET /<file>.<ext> (e.g. /client.js, /style.css) serves that
+//      file from the public dir; GET /assets/* serves the vendored @xterm/xterm files
+//      straight out of node_modules. All three are path-traversal safe (resolved and
+//      pinned inside their base dir).
 //
 //   2. WS /ws?room=<code>&name=<name>&token=<browser-token>  — a web participant.
 //      It knocks / admits / bans / caps through the SAME registry + room state as an
@@ -125,11 +126,12 @@ export function startWebDoor(ctx) {
     });
   }
 
-  async function serveAsset(rest, res) {
-    // `rest` begins with '/'. Resolve inside XTERM_DIR and verify it can't escape
-    // (path-traversal safe): '../' components resolve out and fail the prefix check.
-    const target = path.resolve(XTERM_DIR, '.' + rest);
-    if (target !== XTERM_DIR && !target.startsWith(XTERM_DIR + path.sep)) {
+  // Serve a file from a fixed base dir, path-traversal safe. `rest` begins with '/';
+  // any '../' resolves out and fails the prefix check, so a request can never escape
+  // the base. Shared by the vendored xterm assets and the public client files.
+  async function serveFrom(baseDir, rest, res) {
+    const target = path.resolve(baseDir, '.' + rest);
+    if (target !== baseDir && !target.startsWith(baseDir + path.sep)) {
       res.writeHead(403, { 'content-type': 'text/plain' });
       return res.end('forbidden');
     }
@@ -147,6 +149,8 @@ export function startWebDoor(ctx) {
     res.writeHead(200, { 'content-type': contentType(target), 'content-length': st.size });
     createReadStream(target).pipe(res);
   }
+  const serveAsset = (rest, res) => serveFrom(XTERM_DIR, rest, res);
+  const servePublic = (rest, res) => serveFrom(PUBLIC_DIR, rest, res);
 
   const server = http.createServer((req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -161,6 +165,10 @@ export function startWebDoor(ctx) {
       return res.end('bad request');
     }
     if (pathname.startsWith('/assets/')) return void serveAsset(pathname.slice('/assets'.length), res);
+    // A single-segment path with a file extension (e.g. /client.js, /style.css,
+    // /favicon.ico) → a static file from the public dir. Room codes have no dot, so
+    // they never match here and fall through to the SPA below.
+    if (pathname.indexOf('/', 1) === -1 && path.extname(pathname)) return void servePublic(pathname, res);
     // '/' or a single-segment path (a room code, e.g. /brave-otter) → the SPA.
     if (pathname === '/' || (pathname.indexOf('/', 1) === -1 && pathname.length > 1)) return serveIndex(res);
     res.writeHead(404, { 'content-type': 'text/plain' });
