@@ -59,6 +59,52 @@ test('removeGuest drops a guest but never the host', () => {
   assert.equal(s.roleOf(HOST_ID), 'host');
 });
 
+// ── reconnect: role restore by fingerprint (spec §identity) ─────────────────────
+
+test('a returning fingerprint resumes the role it last held this session', () => {
+  const s = new RoomState({ defaultRole: 'prompter' });
+  s.addGuest('c1', { name: 'siddh', fp: 'SHA256:sid' });
+  s.setRole('c1', 'driver'); // host promoted siddh
+  s.removeGuest('c1'); // wifi drops
+
+  // Same key reconnects under a NEW connection id, at the room default again…
+  const g = s.addGuest('c2', { name: 'siddh', fp: 'SHA256:sid', role: 'prompter' });
+  assert.equal(g.role, 'driver', 'the prior role is restored, not the default');
+  assert.equal(s.roleOf('c2'), 'driver');
+});
+
+test('a fresh fingerprint gets the explicit/default role, not a stranger’s seat', () => {
+  const s = new RoomState({ defaultRole: 'viewer' });
+  s.addGuest('c1', { name: 'sid', fp: 'SHA256:sid' });
+  s.setRole('c1', 'driver');
+  s.removeGuest('c1');
+  const other = s.addGuest('c2', { name: 'mallory', fp: 'SHA256:mallory' });
+  assert.equal(other.role, 'viewer', 'a different key is not handed the departed driver’s role');
+});
+
+test('a keyless guest is never remembered — reconnect is a new session-only seat', () => {
+  const s = new RoomState({ defaultRole: 'prompter' });
+  const g1 = s.addGuest('c1', { name: 'anon', fp: null });
+  s.setRole('c1', 'driver');
+  s.removeGuest('c1');
+  const g2 = s.addGuest('c2', { name: 'anon', fp: null, role: 'prompter' });
+  assert.equal(g2.role, 'prompter', 'keyless rejoin starts fresh (no role restore)');
+  assert.notEqual(g1.id, g2.id);
+});
+
+test('the latest role held wins when a key reconnects more than once', () => {
+  const s = new RoomState({ defaultRole: 'prompter' });
+  s.addGuest('c1', { name: 'sid', fp: 'SHA256:sid' });
+  s.setRole('c1', 'driver');
+  s.removeGuest('c1');
+  const g2 = s.addGuest('c2', { name: 'sid', fp: 'SHA256:sid', role: 'prompter' });
+  assert.equal(g2.role, 'driver');
+  s.setRole('c2', 'viewer'); // demoted, then drops again
+  s.removeGuest('c2');
+  const g3 = s.addGuest('c3', { name: 'sid', fp: 'SHA256:sid', role: 'prompter' });
+  assert.equal(g3.role, 'viewer', 'the most recent role is the one restored');
+});
+
 // ── mode & pause ──────────────────────────────────────────────────────────────
 
 test('setMode reports whether the mode actually changed', () => {

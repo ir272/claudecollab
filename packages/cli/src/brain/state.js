@@ -46,6 +46,10 @@ export class RoomState {
 
   #defaultRole;
   #now;
+  // fp -> the last role that fingerprint held this session. A returning key resumes
+  // its seat's role on reconnect (spec §identity: name, color, role restored on
+  // reconnect); keyless guests (no fp) are never recorded and rejoin as new.
+  #seatRoles = new Map();
 
   /**
    * @param {object} [opts]
@@ -105,13 +109,19 @@ export class RoomState {
     return this.list().filter((p) => p.id !== HOST_ID);
   }
 
-  /** Add a guest at the room's default role (or an explicit one). Returns the record. */
+  /**
+   * Add a guest. A returning fingerprint (one that held a seat earlier this session)
+   * resumes the role it last held — spec §identity: role is restored on reconnect,
+   * and §failure-behavior: "reconnect with same key restores identity + role". A new
+   * or keyless guest gets the explicit role, else the room default. Returns the record.
+   */
   addGuest(id, { name, fp, role } = {}) {
+    const restored = fp ? this.#seatRoles.get(fp) : undefined;
     const p = {
       id,
       name: name ?? 'guest',
       fp: fp ?? null,
-      role: role ?? this.#defaultRole,
+      role: restored ?? role ?? this.#defaultRole,
       cols: undefined,
       rows: undefined,
     };
@@ -119,9 +129,14 @@ export class RoomState {
     return p;
   }
 
-  /** Drop a guest. The host can never be removed. */
+  /**
+   * Drop a guest. The host can never be removed. A keyed guest's current role is
+   * remembered against its fingerprint so a same-key reconnect resumes the seat.
+   */
   removeGuest(id) {
     if (id === HOST_ID) return false;
+    const p = this.participants.get(id);
+    if (p?.fp) this.#seatRoles.set(p.fp, p.role);
     return this.participants.delete(id);
   }
 

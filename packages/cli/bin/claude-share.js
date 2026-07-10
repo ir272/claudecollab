@@ -456,6 +456,8 @@ async function main() {
       });
       relay.onJoin((id) => {
         const info = knockInfo.get(id) ?? { name: 'guest', fp: null };
+        // addGuest restores the role a returning fingerprint last held this session
+        // (spec §identity); a new/keyless guest takes the room default (opts.guests).
         const g = state.addGuest(id, { name: info.name, fp: info.fp, role: opts.guests });
         log.event(`${g.name} joined as ${g.role}`);
         // The join context card lands in the guest's own scrollback before the
