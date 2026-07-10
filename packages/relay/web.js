@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { TYPES, encode, validate } from '../shared/protocol.js';
+import { sanitizeName } from './names.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(here, 'public');
@@ -199,7 +200,10 @@ export function startWebDoor(ctx) {
     // Identity: the host tab carries the host token; a guest carries its browser
     // token (session-only if absent). The relay makes no trust call — the brain does.
     const fp = isHostTab ? 'webhost:' + hostToken : 'web:' + (q.get('token') || randomUUID());
-    const name = (q.get('name') || '').trim().slice(0, 24) || (isHostTab ? 'host' : 'guest');
+    // Printable-ASCII only, same as the ssh door: `?name=` is an untrusted URL param,
+    // and the host writes it verbatim to its terminal / log / session.md and mirrors
+    // it to every ssh guest — raw ESC/OSC/BEL bytes here would be escape injection.
+    const name = sanitizeName(q.get('name'), isHostTab ? 'host' : 'guest');
     const ip = req.socket.remoteAddress || 'unknown';
 
     // Same gate as the ssh door (spec: respect bans/lockouts/caps identically).

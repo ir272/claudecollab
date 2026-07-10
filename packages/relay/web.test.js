@@ -265,6 +265,30 @@ test('web door: a kicked+banned token is refused on reconnect and cannot knock',
   assert.equal(knockedAgain, false, 'a banned token never reaches the host');
 });
 
+test('web door: a ?name= carrying raw ESC/OSC/BEL bytes is sanitized before it knocks', async (t) => {
+  const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  t.after(() => host.client.end());
+  host.send({ t: TYPES.HELLO, want: 'room' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // A hostile invite param: ESC-based CSI, an OSC title-set, a BEL, and a newline —
+  // exactly the bytes the host would otherwise write verbatim to its terminal and
+  // mirror to every ssh guest. encodeURIComponent carries them through the query.
+  const evil = 'a\x1b[31mX\x1b]0;pwned\x07\r\ndrop';
+  const g = connectWeb(relay.webPort, `room=${code}&name=${encodeURIComponent(evil)}&token=tok-x`);
+  t.after(() => g.ws.close());
+  await g.ready();
+
+  const knock = await host.next((m) => m.t === TYPES.KNOCK);
+  // The knock name the host receives is printable ASCII only: no ESC (0x1b), no BEL
+  // (0x07), no CR/LF — the control bytes are gone, the CSI/OSC bodies are inert text.
+  assert.equal(knock.name, 'a[31mX]0;pwneddrop');
+  assert.ok(!/[\x00-\x1f\x7f]/.test(knock.name), 'no control bytes reach the host terminal');
+});
+
 test('web door: an unknown room code is refused politely', async (t) => {
   const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
   t.after(() => relay.close());

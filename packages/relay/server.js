@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { createRegistry } from './rooms.js';
 import { startWebDoor } from './web.js';
+import { sanitizeName } from './names.js';
 import { TYPES, encode, validate, Decoder } from '../shared/protocol.js';
 
 const { Server, utils } = ssh2;
@@ -413,7 +414,9 @@ export function startRelay(opts = {}) {
   }
 
   function finalizeName(room, rec) {
-    const name = rec.nameBuf.trim().slice(0, 24) || 'guest';
+    // feedName already dropped non-printable bytes as it echoed; sanitizeName is the
+    // shared trim/cap/fallback (and the single source of truth both doors run).
+    const name = sanitizeName(rec.nameBuf);
     rec.name = name;
     if (rec.fp) room.seen.set(rec.fp, name); // remember real keys only
     safeWrite(rec.stream, '\r\n');
