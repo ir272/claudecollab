@@ -235,7 +235,11 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   // ── A sends a second draft while Claude is busy → it QUEUES, attributed ──────
   a.type('use tailwind for all of it\r');
   await host.waitFor('queue (1)');
-  await host.waitFor('a → use tailwind for all of it'); // attributed to A in the band
+  await host.waitFor('a → use tailwind for all of it'); // attributed to A in the host band
+  // The band is part of the ONE live screen: the attributed queue is mirrored to
+  // the guest too. Nothing has SENT this text to (fake) Claude yet — it's still
+  // queued — so the only way the guest can have it is the mirrored band.
+  await a.waitFor('a → use tailwind for all of it');
 
   // ── the gate: a prompter's `y` is REJECTED (never reaches Claude) ────────────
   a.type('y');
@@ -252,6 +256,19 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   // …and going idle drains the queue in order (fail-closed drain fired on 'idle').
   await host.waitFor('[claude] prompt: use tailwind for all of it');
   await a.waitFor('[claude] prompt: use tailwind for all of it');
+
+  // ── /recap posts the summary to the SHARED screen (guests + host read it) ─────
+  // A's earlier rejected prompter-`y` is still sitting in A's draft (spec: a blocked
+  // y/n is "just typing"); clear the line (ctrl+u) so /recap composes cleanly.
+  a.type('\x15');
+  a.type('/recap\r'); // A is a driver now; /recap is prompter+
+  await host.waitFor('session recap'); // the full prose reaches the host
+  await a.waitFor('session recap'); // …and is mirrored to the guest, not host-only
+
+  // ── guest A self-detaches (Ctrl+C): the host frees the seat, no ghost lingers ─
+  a.type('\x03');
+  await host.waitFor('a left'); // the same cleanup path as a natural leave fires
+  await a.onClose(); // and A's connection is dropped
 
   // ── host kicks B ─────────────────────────────────────────────────────────────
   cli.write('/kick @b\r');
@@ -274,6 +291,7 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   assert.match(md, /\*\*a\*\*: use tailwind for all of it/); // prompt 2, attributed to A
   assert.match(md, /set a to prompter/); // role change recorded
   assert.match(md, /set a to driver/); // role change recorded
+  assert.match(md, /a left/); // self-detach freed A's seat (no ghost participant)
   assert.match(md, /b joined/); // B's join recorded
   assert.match(md, /b was kicked/); // moderation recorded
   assert.match(md, /src\/app\.js/); // PostToolUse file surfaced in "Files touched"

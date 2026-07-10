@@ -44,9 +44,16 @@ test('y/n answers an ask (→ pty) only for driver+ and only while armed', () =>
   assert.equal(d('u', 'prompter', 'y', { armed: true }).kind, 'draft', 'prompter y is just typing');
   assert.equal(d('u', 'viewer', 'y', { armed: true }).kind, 'toast');
 
-  // NOT armed (fail closed): even a driver's y is just draft input, never sent to Claude
+  // NOT armed (fail closed): a DRIVER's y is just draft input, never sent to Claude.
   assert.equal(d('u', 'driver', 'y', { armed: false }).kind, 'draft');
-  assert.equal(d('u', 'host', 'y', { armed: false }).kind, 'draft');
+
+  // The host is the escape hatch: a missed Notification hook must never leave a real
+  // on-screen ask unanswerable, so the host's lone y/n ALWAYS forwards to Claude —
+  // armed or not (spec §fail-closed: when state is ambiguous, y/n is accepted from
+  // the host only).
+  assert.deepEqual(d('u', 'host', 'y', { armed: false }), { kind: 'pty', data: 'y' });
+  assert.deepEqual(d('u', 'host', 'n', { armed: false }), { kind: 'pty', data: 'n' });
+  assert.deepEqual(d('u', 'host', 'Y', { armed: false }), { kind: 'pty', data: 'Y' });
 });
 
 test('Ctrl+C detaches a guest but is normal input for the host', () => {

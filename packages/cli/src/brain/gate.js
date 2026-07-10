@@ -10,9 +10,11 @@
 //      (prompt vs Claude slash vs bash vs claude-share command) and may this role
 //      send it? (Composing is prompter+, but only driver+ may fire /clear or !ls.)
 //
-// Fail closed: the y/n permission answer routes to Claude ONLY when ctx.armed is
-// true (an 'ask' Notification is pending). If we are not certain an ask is up, a
-// driver's "y" is just a character typed into their draft — never sent to Claude.
+// Fail closed: a DRIVER's y/n routes to Claude ONLY when ctx.armed is true (an
+// 'ask' Notification is pending); if we are not certain an ask is up, a driver's
+// "y" is just a character typed into their draft. The HOST is the escape hatch —
+// its y/n always forwards (armed or not) so a missed hook can never leave a real
+// on-screen ask unanswerable (spec §fail-closed: y/n accepted from the host only).
 
 import { atLeast } from './state.js';
 import { COMMAND_NAMES } from './commands.js';
@@ -62,8 +64,13 @@ export function dispatch(userId, role, bytes, ctx = {}) {
     return atLeast(role, 'prompter') ? { kind: 'pty', data: s } : viewerBlock(userId, toasted);
   }
 
-  // y/n answering a pending permission ask — driver and up, and only while armed.
-  if (armed && atLeast(role, 'driver') && /^[yn]$/i.test(s)) {
+  // y/n answering a permission ask. The host is the escape hatch: it may always
+  // answer, armed or not, so a missed Notification hook (or --no-hooks) can never
+  // leave a real on-screen ask unanswerable and deadlock the room (spec §fail-
+  // closed: when state is ambiguous, y/n is accepted from the host only). A driver
+  // may answer too, but only while we KNOW an ask is pending (armed); otherwise a
+  // driver's y/n is just draft typing (fail closed).
+  if (/^[yn]$/i.test(s) && (role === 'host' || (armed && atLeast(role, 'driver')))) {
     return { kind: 'pty', data: s };
   }
 

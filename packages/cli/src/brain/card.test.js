@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { build } from './card.js';
+import { build, recapCard } from './card.js';
 import { RoomState } from './state.js';
 import { Log } from './log.js';
 import { stringWidth } from '../renderer.js';
@@ -84,4 +84,41 @@ test('every card line stays within a sane terminal width', () => {
   for (const line of card.split('\n')) {
     assert.ok(stringWidth(line) <= 80, `line too wide: ${line}`);
   }
+});
+
+// ── /recap card (spec §join-context-card: /recap posts the summary to the SHARED
+//    screen — full prose for everyone, not a truncated host-only toast) ──────────
+
+test('the recap card frames the FULL prose in a titled box attributed to the runner', () => {
+  const summary =
+    'The team refactored the navbar into a shared component, then moved the whole ' +
+    'layout to tailwind. A failing auth test was fixed along the way, and the hero ' +
+    'section is now full-bleed.';
+  const card = recapCard('ian', summary, { cols: 80 });
+  const lines = card.split('\n');
+  assert.ok(lines[0].startsWith('┌') && lines[0].includes('recap'), 'opens a titled recap box');
+  assert.match(card, /by ian/, 'attributes the recap to its runner');
+  assert.match(card, /└/, 'closes the box');
+  // The FULL summary survives — every word is present across the wrapped body,
+  // not chopped to a 60-char toast.
+  const flat = card.replace(/\s+/g, ' ');
+  for (const word of ['navbar', 'tailwind', 'auth', 'full-bleed']) {
+    assert.ok(flat.includes(word), `recap keeps "${word}"`);
+  }
+});
+
+test('the recap card wraps to the given width so it never overflows the shared screen', () => {
+  const summary = 'word '.repeat(120).trim(); // far wider than one line
+  const card = recapCard('siddh', summary, { cols: 80 });
+  const lines = card.split('\n');
+  assert.ok(lines.length > 3, 'a long summary wraps onto multiple body rows');
+  for (const line of lines) {
+    assert.ok(stringWidth(line) <= 80, `recap line too wide: ${line}`);
+  }
+});
+
+test('the recap card degrades gracefully on empty prose', () => {
+  const card = recapCard('ian', '   ', { cols: 80 });
+  assert.ok(card.startsWith('┌'));
+  assert.match(card, /empty/i);
 });

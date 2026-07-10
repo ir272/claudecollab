@@ -31,7 +31,7 @@ import { Log } from '../src/brain/log.js';
 import { Drafts } from '../src/brain/drafts.js';
 import { dispatch, classifySend, sendAllowed } from '../src/brain/gate.js';
 import { parse as parseCommand, permitted as commandPermitted, resolveMention } from '../src/brain/commands.js';
-import { build as buildCard } from '../src/brain/card.js';
+import { build as buildCard, recapCard } from '../src/brain/card.js';
 
 function parseArgs(argv) {
   const opts = {
@@ -175,20 +175,27 @@ async function main() {
     return lines;
   }
 
-  const bandState = () => {
-    const cols = stdout.columns || 80;
-    return {
-      cols,
-      rows: stdout.rows || 24,
-      bandRows,
-      room: state.room,
-      participants: state.list().map((p) => ({ name: p.name, role: p.role })),
-      mode: state.mode,
-      lines: bandDynamicLines(cols),
-    };
-  };
+  const bandState = (cols, rows) => ({
+    cols,
+    rows,
+    bandRows,
+    room: state.room,
+    participants: state.list().map((p) => ({ name: p.name, role: p.role })),
+    mode: state.mode,
+    lines: bandDynamicLines(cols),
+  });
+  // The band is part of the ONE live screen (spec §how-a-session-works). Paint it
+  // for the host at its own terminal size, and mirror the same band to guests
+  // sized to the clamped shared view — so everyone, not just the host, sees the
+  // draft boxes/cursors, the attributed queue, the status line, knocks, and every
+  // event toast (joins/leaves/kicks/role changes, the mode-change warning banner,
+  // recap notices). Suppressed while paused: guests hold on the pause card.
   const repaintBand = () => {
-    if (stdout.isTTY) stdout.write(paint(bandState()));
+    if (stdout.isTTY) stdout.write(paint(bandState(stdout.columns || 80, stdout.rows || 24)));
+    if (relay && multiplayer && !state.paused) {
+      const { cols, rows } = state.clamp();
+      relay.sendScreen(paint(bandState(cols, rows)));
+    }
   };
 
   const showToast = (msg, ms = 4000) => {
@@ -207,6 +214,17 @@ async function main() {
   const notify = (userId, msg) => {
     if (userId && userId !== HOST_ID) relay?.sendTo(userId, `\r\n${msg}\r\n`);
     showToast(msg);
+  };
+
+  // Post prose to the SHARED screen — the host's stdout and every live guest's
+  // terminal (spec: /recap posts its summary to the shared screen, for all to read,
+  // not a host-only toast). Claude repaints its region on the next frame; the band
+  // repaints after. Not while paused.
+  const broadcast = (text) => {
+    const framed = '\r\n' + String(text).replace(/\r?\n/g, '\r\n') + '\r\n';
+    if (stdout.isTTY) stdout.write(framed);
+    if (relay && !state.paused) relay.sendScreen(framed);
+    repaintBand();
   };
 
   // ── size clamp (spec §renderer) ────────────────────────────────────────────
@@ -325,7 +343,10 @@ async function main() {
     execFile('claude', ['-p', prompt], { timeout: 30000, maxBuffer: 1 << 20 }, (err, out) => {
       const summary = err ? 'recap unavailable (claude -p failed)' : String(out).trim();
       log.event(`recap by ${by}: ${summary}`);
-      showToast(`recap ready — ${summary.split('\n')[0].slice(0, 60)}`, 10000);
+      // Post the FULL prose to the shared screen so everyone — guests included, and
+      // the prompter who ran it — reads the whole recap, not a 60-char host toast.
+      broadcast(recapCard(by, summary, { cols: state.clamp().cols }));
+      showToast('recap posted to the room', 6000);
     });
   }
 
@@ -362,6 +383,21 @@ async function main() {
     }
   }
 
+  // Free a guest's seat and purge their footprint — draft boxes, queued items, any
+  // stale knock — then re-clamp the shared view and announce the departure. Shared
+  // by a relay-signaled LEFT (wifi drop / natural disconnect) and a self-detach.
+  const forgetGuest = (id) => {
+    const name = nameOf(id);
+    state.removeGuest(id);
+    drafts.removeUser(id);
+    queue.removeByAuthor(id);
+    pendingKnocks = pendingKnocks.filter((k) => k.id !== id);
+    knockInfo.delete(id);
+    recomputeClamp();
+    log.event(`${name} left`);
+    showToast(`${name} left`);
+  };
+
   // ── input effect application (host + guests, one table via the gate) ─────────
   const applyInput = (userId, eff) => {
     switch (eff.kind) {
@@ -375,7 +411,14 @@ async function main() {
         break;
       }
       case 'detach':
-        if (userId !== HOST_ID) relay?.drop(userId, false); // self-detach, no ban
+        // Ctrl+C: the guest leaves on their own. The relay drops the connection
+        // WITHOUT echoing a LEFT back (it assumes host-initiated drops mean the host
+        // already knows) — so onLeave never fires and we must free the seat here, or
+        // the guest lingers as a ghost in the status line, queue, and size clamp.
+        if (userId !== HOST_ID) {
+          relay?.drop(userId, false); // close the connection, no ban
+          forgetGuest(userId);
+        }
         break;
       case 'toast':
         notify(eff.target, eff.message);
@@ -424,17 +467,7 @@ async function main() {
         showToast(`${g.name} joined as ${g.role} ${ROLE_GLYPH[g.role] ?? ''}`);
         recomputeClamp();
       });
-      relay.onLeave((id) => {
-        const name = nameOf(id);
-        state.removeGuest(id);
-        drafts.removeUser(id);
-        queue.removeByAuthor(id);
-        pendingKnocks = pendingKnocks.filter((k) => k.id !== id);
-        knockInfo.delete(id);
-        recomputeClamp();
-        log.event(`${name} left`);
-        showToast(`${name} left`);
-      });
+      relay.onLeave((id) => forgetGuest(id));
       relay.onKey(({ id, data }) => {
         const role = state.roleOf(id) ?? 'viewer';
         applyInput(id, dispatch(id, role, data, { armed, toasted }));

@@ -100,3 +100,58 @@ export function build(state, log, {
   out.push("── you're live ──");
   return out.join('\n');
 }
+
+// Word-wrap plain prose to `width` cells, honoring the text's own newlines and
+// hard-splitting any single token longer than the width so a box can never
+// overflow. Returns at least one (possibly empty) line.
+function wrapPlain(text, width) {
+  const out = [];
+  const w = Math.max(1, width);
+  for (const para of String(text).split('\n')) {
+    let line = '';
+    for (let word of para.split(/\s+/).filter(Boolean)) {
+      // Break a pathologically long token across rows.
+      while (stringWidth(word) > w) {
+        const head = truncateToWidth(word, w);
+        if (line) {
+          out.push(line);
+          line = '';
+        }
+        out.push(head);
+        word = word.slice(head.length);
+      }
+      const cand = line ? `${line} ${word}` : word;
+      if (stringWidth(cand) > w && line) {
+        out.push(line);
+        line = word;
+      } else {
+        line = cand;
+      }
+    }
+    out.push(line);
+  }
+  return out.length ? out : [''];
+}
+
+/**
+ * Frame a /recap summary as a titled box for the SHARED screen (spec §join-context-
+ * card: "/recap … posts the summary to the shared screen"). Unlike a band toast,
+ * this keeps the FULL prose — wrapped to `cols` so everyone, guests included, can
+ * read the whole thing. Pure; the wiring broadcasts the result to host + guests.
+ *
+ * @param {string} by                who ran /recap (display name)
+ * @param {string} summary           the prose returned by `claude -p`
+ * @param {{cols?:number}} [opts]    shared-view width (defaults to the 80 floor)
+ * @returns {string} multi-line block ('\n'-separated; the caller CRLF-izes)
+ */
+export function recapCard(by, summary, { cols = 80 } = {}) {
+  const width = Math.max(20, Math.min(MAX_INNER, cols - 2));
+  const body = wrapPlain(String(summary ?? '').trim() || '(empty recap)', width);
+  const title = `recap · by ${by}`;
+  const titleTrunc = truncateToWidth(title, width);
+  const dashes = Math.max(0, width - stringWidth(titleTrunc));
+  const out = [`┌ ${titleTrunc} ${'─'.repeat(dashes)}┐`];
+  for (const l of body) out.push(`│ ${padTo(l, width)} │`);
+  out.push(`└${'─'.repeat(width + 2)}┘`);
+  return out.join('\n');
+}

@@ -27,6 +27,15 @@ const { spawn } = require('node:child_process');
 
 // ── locate --settings and load the injected hook commands ────────────────────
 const argv = process.argv.slice(2);
+
+// Headless one-shot (`claude -p "<prompt>"`) — claude-share's /recap runs this over
+// the attributed log. Print a deterministic summary and exit, so the recap path is
+// exercised end to end without real Claude.
+if (argv.includes('-p')) {
+  process.stdout.write('session recap: the room refactored the navbar and moved the layout to tailwind.\n');
+  process.exit(0);
+}
+
 let settingsPath = null;
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--settings') settingsPath = argv[i + 1];
