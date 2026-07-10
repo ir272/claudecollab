@@ -34,7 +34,7 @@ import { installHooks, listenHooks } from '../src/hooks.js';
 import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js';
 import { hostUrl, inviteUrl, readyToast } from '../src/invite.js';
 import { createPartitioner } from '../src/term-chatter.js';
-import { RoomState, HOST_ID, atLeast } from '../src/brain/state.js';
+import { RoomState, HOST_ID, atLeast, FLOOR_COLS, FLOOR_ROWS } from '../src/brain/state.js';
 import { Queue } from '../src/brain/queue.js';
 import { Log } from '../src/brain/log.js';
 import { Drafts } from '../src/brain/drafts.js';
@@ -130,6 +130,7 @@ async function main() {
   // token. They are the HOST, not separate participants (finding 4) — mapped to
   // HOST_ID for input attribution and never counted as a second roster entry.
   const hostTabIds = new Set();
+  const hostTabSizes = new Map(); // host-tab connection id -> {cols, rows} capacity
   const claude = { state: 'idle' };
   let armed = false; // true only while a permission ask is pending (hook-armed)
   let pendingKnocks = []; // FIFO of guest {id,name,fp,seen} awaiting the host tab's admit
@@ -214,8 +215,20 @@ async function main() {
   // shared size (min of participants, floor 80×24), so every participant — the host
   // included — sees the SAME layout anchored at the same rows (finding 3), and the
   // one painted band can be written to the host and mirrored to guests unchanged.
-  // Solo there is no shared view, so we use the host's own terminal.
-  const viewSize = () => (multiplayer ? state.clamp() : { cols: stdout.columns || 80, rows: stdout.rows || 24 });
+  // The host TAB is not a roster participant (finding 4) but it IS a size
+  // participant: folding its capacity in makes the shared view browser-shaped from
+  // the start — solo, the clamp used to carry only the host TERMINAL's aspect, so
+  // the mirror letterboxed until the first guest join reshaped it.
+  // Solo with no tab there is no shared view, so we use the host's own terminal.
+  const viewSize = () => {
+    if (!multiplayer) return { cols: stdout.columns || 80, rows: stdout.rows || 24 };
+    let { cols, rows } = state.clamp();
+    for (const s of hostTabSizes.values()) {
+      cols = Math.min(cols, s.cols);
+      rows = Math.min(rows, s.rows);
+    }
+    return { cols: Math.max(FLOOR_COLS, cols), rows: Math.max(FLOOR_ROWS, rows) };
+  };
 
   // Send a shared-view frame to the guests who should see it. When everyone is at or
   // above the 80×24 floor this is a single broadcast; when at least one guest is below
@@ -308,11 +321,17 @@ async function main() {
     // shared width — resize the child only when that actually changes.
     const childRows = Math.max(1, rows - band);
     if (cols !== appliedCols || childRows !== appliedChildRows) {
+      const reclamp = appliedCols !== null;
       appliedCols = cols;
       appliedChildRows = childRows;
       try {
         pty.resizeChild(cols, childRows);
       } catch {}
+      // A shared-size change reflows the mirrors' old-size content into ghost text
+      // (Claude repaints its region on SIGWINCH, but never the rows above it).
+      // Erase screen+scrollback IN the byte stream so it is ordered BEFORE the
+      // repaint frames — a client-side clear can't be ordered against frames.
+      if (reclamp) mirror('\x1b[2J\x1b[3J\x1b[H');
     }
 
     // Paint TWO variants of the one status line from the SAME layout: the host's own
@@ -566,7 +585,7 @@ async function main() {
       log.event(`recap by ${by}: ${summary}`);
       // Post the FULL prose to the shared screen so everyone — guests included, and
       // the prompter who ran it — reads the whole recap, not a 60-char host toast.
-      broadcast(recapCard(by, summary, { cols: state.clamp().cols }));
+      broadcast(recapCard(by, summary, { cols: viewSize().cols }));
       showToast('recap posted to the room', 6000);
     });
   }
@@ -875,6 +894,7 @@ async function main() {
     r.onLeave((id) => {
       guestPartitioners.delete(id);
       hostTabIds.delete(id); // a host tab closing is not a roster departure
+      hostTabSizes.delete(id); // …but its capacity leaves the clamp
       forgetGuest(id);
     });
     r.onKey(({ id, data }) => {
@@ -903,9 +923,19 @@ async function main() {
     });
     r.onUi(({ id, action }) => handleUi(actorOf(id), action));
     r.onResize(({ id, cols, rows }) => {
-      state.setSize(id, cols, rows);
-      if (state.belowFloor(id)) {
-        r.sendTo(id, '\x1b[2J\x1b[H  your terminal is below 80×24 — make it bigger to join the shared view\r\n');
+      if (hostTabIds.has(id)) {
+        // The host's own tab: a size participant, not a roster one (see viewSize).
+        // The relay announces a placeholder 80×24 for every web rec at admit,
+        // BEFORE the tab has measured itself — folding that in crashes the clamp
+        // to the floor for a beat and Claude reflows its transcript twice (the
+        // wrap garbage guests then see). 80×24 IS the clamp floor, so a real
+        // report that size carries no information — skip both.
+        if (cols !== FLOOR_COLS || rows !== FLOOR_ROWS) hostTabSizes.set(id, { cols, rows });
+      } else {
+        state.setSize(id, cols, rows);
+        if (state.belowFloor(id)) {
+          r.sendTo(id, '\x1b[2J\x1b[H  your terminal is below 80×24 — make it bigger to join the shared view\r\n');
+        }
       }
       recomputeClamp();
       repaintBand();

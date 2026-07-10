@@ -656,6 +656,19 @@ function main() {
       term.textarea.blur();
       term.textarea.disabled = true;
     }
+    // The focus/blur prime is inert in a background window (Chrome defers focus
+    // events until the window is foreground), so a guest tab opened behind another
+    // window never drew a cursor. Flip xterm's init flag directly — the same thing
+    // its _showCursor() does on first focus, minus the need for real focus.
+    try {
+      const cs = term._core?._coreService;
+      if (cs && !cs.isCursorInitialized) {
+        cs.isCursorInitialized = true;
+        term.refresh(0, term.rows - 1);
+      }
+    } catch {
+      /* private API moved — the focus/blur prime still covers foreground tabs */
+    }
     const ro = new ResizeObserver(() => fit());
     ro.observe(stage);
     window.addEventListener('resize', fit);
@@ -683,18 +696,27 @@ function main() {
   // folds it into the shared clamp. Always measured at the REFERENCE font (13px):
   // scaleTerm retunes the actual font to fill the stage, and capacity tracking the
   // live font would feed back into the clamp (bigger font → smaller clamp → bigger
-  // font …). The mirror itself never sizes from the container: it renders at
-  // exactly state.view (see applyView) and scales visually.
+  // font …). The reference cell is measured ONCE, before the first retune — deriving
+  // it from a retuned font (cw/font*13) picks up per-size rounding, so the derived
+  // reference drifts a little each retune and the clamp oscillates (erase/repaint
+  // churn on every join). The mirror itself never sizes from the container: it
+  // renders at exactly state.view (see applyView) and scales visually.
+  let refCell = null;
+  function refCellSize() {
+    if (refCell) return refCell;
+    const { cw, ch } = cellSize();
+    const font = term.options.fontSize || 13;
+    const cell = { cw: (cw / font) * 13, ch: (ch / font) * 13 };
+    if (font === 13) refCell = cell; // only cache the un-retuned measurement
+    return cell;
+  }
   function fit() {
     if (!term) return;
     const rect = stage.getBoundingClientRect();
     if (rect.width < 2 || rect.height < 2) return;
-    const { cw, ch } = cellSize();
-    const font = term.options.fontSize || 13;
-    const refCw = (cw / font) * 13;
-    const refCh = (ch / font) * 13;
-    const cols = Math.max(2, Math.floor((rect.width - 24) / refCw));
-    const rows = Math.max(1, Math.floor((rect.height - 20) / refCh));
+    const { cw, ch } = refCellSize();
+    const cols = Math.max(2, Math.floor((rect.width - 24) / cw));
+    const rows = Math.max(1, Math.floor((rect.height - 20) / ch));
     sendMsg({ t: 'resize', cols, rows });
     scaleTerm();
   }
@@ -725,9 +747,10 @@ function main() {
   }
 
   // Make the mirror FILL the tab: pick the font size that best fits the shared
-  // cols×rows into the stage (crisp text beats transform-zoom), then a residual
-  // scale (≤ ~1) closes the remaining gap. termEl's rect stays equal to the VISUAL
-  // content box, so pointer math and the cursor overlay read true positions.
+  // cols×rows into the stage (crisp text beats transform-zoom), then a clamped
+  // non-uniform residual scale closes the remaining gap. termEl's rect stays equal
+  // to the VISUAL content box, so pointer math and the cursor overlay read true
+  // positions (getBoundingClientRect reflects the transform, per-axis included).
   function scaleTerm() {
     if (!term) return;
     // .xterm-screen is the true cols×rows content box (.xterm just fills its parent)
@@ -753,30 +776,23 @@ function main() {
       setTimeout(scaleTerm, 90);
       return;
     }
-    // Pass 2: the shared size carries someone ELSE's aspect ratio (solo it is the
-    // host TERMINAL's shape, not this browser's) — a uniform scale then letterboxes
-    // one axis. Pad the slack axis instead: letter-spacing stretches the columns,
-    // line-height the rows. Crisp, undistorted, and the CLI fills BOTH axes.
-    const cellW = w / term.cols;
-    const cellH = h / term.rows;
-    const curLs = term.options.letterSpacing || 0;
-    const curLh = term.options.lineHeight || 1.1;
-    const wantLs = Math.max(0, Math.min(5, curLs + (availW / term.cols - cellW)));
-    const wantLh = Math.max(1, Math.min(1.4, (curLh * availH) / term.rows / cellH));
-    if ((Math.abs(wantLs - curLs) > 0.4 || Math.abs(wantLh - curLh) > 0.02) && retuneTries < 8) {
-      retuneTries += 1;
-      if (Math.abs(wantLs - curLs) > 0.4) term.options.letterSpacing = Math.round(wantLs * 2) / 2;
-      if (Math.abs(wantLh - curLh) > 0.02) term.options.lineHeight = Math.round(wantLh * 100) / 100;
-      setTimeout(scaleTerm, 90);
-      return;
-    }
+    // Pass 2: close the residual gap (integer font steps + a foreign aspect in the
+    // shared size) with a mildly NON-uniform scale — each axis may stretch up to 8%
+    // past the uniform fit. The whole rendered picture scales together, so
+    // box-drawing lines stay CONNECTED (per-cell padding via letter-spacing /
+    // line-height broke every solid line into dashes). Residue past the cap stays
+    // as a small quiet gap rather than visible glyph distortion.
     retuneTries = 0;
     const k = Math.min(fit, 1);
+    const kx = Math.min(availW / w, k * 1.08);
+    const ky = Math.min(availH / h, k * 1.08);
     termEl.style.width = w + 'px';
     termEl.style.height = h + 'px';
-    termEl.style.transform = `scale(${k})`;
-    // Center whatever gap remains, like a terminal window would sit.
-    termEl.style.left = Math.max(12, (rect.width - w * k) / 2) + 'px';
+    termEl.style.transform = `scale(${kx}, ${ky})`;
+    // Center horizontally; anchor to the BOTTOM so Claude's input line hugs the
+    // bottom of the page like a real terminal — vertical slack collects above.
+    termEl.style.left = Math.max(12, (rect.width - w * kx) / 2) + 'px';
+    termEl.style.top = Math.max(10, rect.height - 10 - h * ky) + 'px';
   }
 
   // ── outbound ───────────────────────────────────────────────────────────────

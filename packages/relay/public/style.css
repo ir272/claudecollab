@@ -510,7 +510,8 @@ body {
   mask-composite: exclude;
 }
 #term {
-  /* sized to the xterm's own content by script; scaled (never up) to fit the glass.
+  /* sized to the xterm's own content by script; scaled (per-axis, ≤8% stretch) to
+     fill the glass, bottom-anchored so Claude's input line hugs the page bottom.
      The transform keeps its rect equal to the visual box for pointer/cursor math. */
   position: absolute;
   top: 10px;
