@@ -322,6 +322,9 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   await hostTab.waitForState((s) => s.participants.find((p) => p.id === aId)?.role === 'prompter');
 
   // ── A composes a draft that reaches Claude and hits a permission ask ─────────
+  // Drafts are created explicitly (Ctrl+N / the + draft chip) — typing alone never
+  // starts one.
+  a.type('\x0e');
   a.type('make the hero full-bleed [ask]\r');
   await host.waitFor('[claude] prompt: make the hero full-bleed'); // reached the (fake) claude
   await a.waitFor('[claude] prompt: make the hero full-bleed'); // and was mirrored to the guest
@@ -330,6 +333,7 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   await hostTab.waitForState((s) => s.claudeState === 'ask');
 
   // ── A sends a second draft while Claude is busy → it QUEUES, attributed ──────
+  a.type('\x0e');
   a.type('use tailwind for all of it\r');
   await hostTab.waitForState((s) => s.queue.some((q) => q.text === 'use tailwind for all of it' && q.author === aId));
 

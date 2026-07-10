@@ -44,10 +44,14 @@
         <span class="sep"></span>
         <span class="room">room <b id="sb-room">—</b></span>
         <span id="avatars" class="avatars"></span>
+        <span id="sb-role" class="my-role"></span>
+        <span id="claude-chip" class="chip claude idle">idle</span>
         <span class="top-spacer"></span>
         <span id="knocks" class="knocks"></span>
-        <button id="direct-btn" class="ctrl" type="button" title="Type into Claude directly (arrows work in its menus); click a draft to compose again" hidden>
-          <span class="ico">⌨</span> Claude
+        <button id="queue-chip" class="ctrl qchip" type="button" title="Prompts waiting for Claude" hidden></button>
+        <button id="new-draft" class="ctrl" type="button" title="Start a draft (or double-click the terminal)">+ draft</button>
+        <button id="direct-btn" class="ctrl" type="button" title="Keys are going straight into Claude; click a draft to compose instead" hidden>
+          <span class="ico">⌨</span>
         </button>
         <span id="host-controls" class="host-controls" hidden>
           <button id="copy-invite" class="ctrl" type="button" title="Copy invite link"><span class="ico">⧉</span> Invite</button>
@@ -56,6 +60,8 @@
           <span id="end-confirm" class="end-confirm" hidden></span>
         </span>
       </header>
+      <!-- queue popover: the attributed waiting line, opened from the header chip -->
+      <div id="queue-pop" class="popover queue-pop" hidden></div>
 
       <!-- avatar click → role/kick popover (host) or identity card (guest) -->
       <div id="popover" class="popover" hidden></div>
@@ -71,6 +77,8 @@
         <div id="stage">
           <div id="term"></div>
           <div id="cursors" aria-hidden="true"></div>
+          <!-- floating draft boxes live INSIDE the terminal surface -->
+          <div id="drafts" class="overlays"></div>
           <div id="paused" class="paused-card" hidden>
             <div class="paused-inner">
               <div class="paused-icon">⏸</div>
@@ -79,22 +87,9 @@
             </div>
           </div>
         </div>
-
-        <section id="tray" class="tray">
-          <div class="tray-top">
-            <span id="claude-chip" class="chip claude idle">Claude is idle</span>
-            <span id="sb-role" class="my-role"></span>
-            <button id="new-draft" class="ctrl tiny" type="button">+ new draft</button>
-          </div>
-          <div id="drafts" class="drafts"></div>
-          <div id="queue" class="queue" hidden></div>
-          <!-- invisible key catcher: keystrokes land here and are mailed to the
-               brain; the draft boxes above are the only visible composer -->
-          <textarea id="composer" class="composer" rows="1" spellcheck="false" autocomplete="off" aria-label="compose"></textarea>
-          <p id="viewer-note" class="viewer-note" hidden>
-            You're a viewer — ask the host for a role to type.
-          </p>
-        </section>
+        <!-- invisible key catcher: keystrokes land here and are mailed to the
+             brain; the floating draft boxes are the only visible composer -->
+        <textarea id="composer" class="composer" rows="1" spellcheck="false" autocomplete="off" aria-label="compose"></textarea>
       </main>
     </section>
 

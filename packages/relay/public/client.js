@@ -303,6 +303,8 @@ export function overlayView(state, selfId) {
   const queue = (Array.isArray(s.queue) ? s.queue : []).map((it) => ({
     n: it.n,
     text: it.text ?? '',
+    author: it.author,
+    isMine: it.author === selfId,
     name: nameFor(pById, it.author),
     color: colorFor(pById, it.author),
   }));
@@ -335,8 +337,6 @@ export function overlayView(state, selfId) {
     // The shared clamp every mirrored frame is painted at; the xterm mirror must
     // be exactly this size (null on an older host → fall back to local fitting).
     view: s.view && typeof s.view === 'object' ? s.view : null,
-    // Participants in direct-input mode (their keys go raw to Claude).
-    direct: Array.isArray(s.direct) ? s.direct : [],
   };
 }
 
@@ -396,9 +396,14 @@ function main() {
   let mirrorSized = false;
   let pendingFrames = [];
   let lastViewKey = '';
-  // Direct-input mode: my keys bypass the drafts and go raw to Claude (brain-owned;
-  // this mirrors the last state so key handlers don't need to re-derive it).
+  // Direct mode is DERIVED, not toggled: a driver with no draft focused types
+  // straight into Claude. Updated from every state frame.
   let directOn = false;
+  // Floating-draft placement: per-viewer, session-local. boxId -> {x, y, w} px
+  // within the stage; a box with no entry sits "home" above Claude's input line.
+  const place = new Map();
+  let pendingSpawn = null; // stage-relative {x,y} for the next box I author (dblclick)
+  let draggingDraft = false; // renders skip while a draft is mid-drag
 
   // ── DOM handles ──────────────────────────────────────────────────────────────
   const joinScreen = $('#join');
@@ -414,12 +419,12 @@ function main() {
   const termEl = $('#term');
   const cursorLayer = $('#cursors');
   const pausedCard = $('#paused');
-  const trayClaude = $('#claude-chip');
-  const trayDrafts = $('#drafts');
-  const trayQueue = $('#queue');
+  const claudeChip = $('#claude-chip');
+  const draftsLayer = $('#drafts');
+  const queueChip = $('#queue-chip');
+  const queuePop = $('#queue-pop');
   const composer = $('#composer');
   const newDraftBtn = $('#new-draft');
-  const viewerNote = $('#viewer-note');
   const hostControls = $('#host-controls');
   const knocksBox = $('#knocks');
   const avatarsBox = $('#avatars');
@@ -743,14 +748,6 @@ function main() {
     const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
     if (text) sendKey(pasteBytes(text));
   });
-  // Clicking anywhere in the tray leaves direct mode (back to composing); clicks
-  // that aren't on a button or draft text also refocus the catcher.
-  $('#tray').addEventListener('mousedown', (e) => {
-    if (directOn) setDirect(false);
-    if (e.target.closest('button, input, select, a, textarea, .draft-body')) return;
-    setTimeout(focusComposer, 0);
-  });
-
   // Direct mode: translate a keydown to the raw bytes Claude's own UI expects —
   // a superset of the draft keymap (Tab, Ctrl+letter) since nothing is off-limits
   // for a driver typing at the "real" terminal. ⌘ stays with the browser.
@@ -763,16 +760,23 @@ function main() {
     if (e.key === 'Tab') return e.shiftKey ? '\x1b[Z' : '\t';
     return keyToBytes(e);
   }
-  const setDirect = (on) => sendMsg({ t: 'ui', action: { kind: 'direct', on } });
-  directBtn.addEventListener('click', () => setDirect(!directOn));
-  // Click the terminal → type into Claude (driver+); click back into the tray → compose.
-  stage.addEventListener('mousedown', () => {
-    if (directOn) return;
+  // Click the bare terminal while composing → step out of the draft (Esc). The
+  // brain sees the Esc as "leave the box" (never an interrupt while composing);
+  // for a driver the next keystroke is then raw to Claude.
+  stage.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.fdraft')) return;
     const v = lastState ? overlayView(lastState, selfId) : null;
-    if (v?.canDrive) {
-      setDirect(true);
-      composer.blur();
-    }
+    if (v && v.drafts.some((d) => d.focusedBySelf)) sendKey('\x1b');
+  });
+  // Double-click an empty spot → a new draft spawns right there (explicit creation).
+  stage.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.fdraft')) return;
+    const v = lastState ? overlayView(lastState, selfId) : null;
+    if (!v?.canCompose) return;
+    const r = stage.getBoundingClientRect();
+    pendingSpawn = { x: e.clientX - r.left, y: e.clientY - r.top };
+    sendKey(NEW_DRAFT_BYTES);
+    setTimeout(focusComposer, 0);
   });
 
   // Keys over a standing drag-selection (the catcher is blurred then, so these land
@@ -886,10 +890,10 @@ function main() {
   function render() {
     if (!lastState) return;
     const v = overlayView(lastState, selfId);
-    directOn = v.direct.includes(selfId);
-    directBtn.hidden = !v.canDrive;
-    directBtn.classList.toggle('active', directOn);
-    stage.classList.toggle('direct', directOn);
+    // Direct is derived: a driver with no draft focused types straight into Claude.
+    directOn = v.canDrive && !v.drafts.some((d) => d.focusedBySelf);
+    directBtn.hidden = !directOn; // a passive "keys go into Claude" indicator
+    ghostHint(v);
     applyView(v);
     renderStatusbar(v);
     renderClaudeChip(v);
@@ -928,13 +932,26 @@ function main() {
   }
 
   function renderClaudeChip(v) {
-    if (directOn) {
-      trayClaude.className = 'chip claude busy';
-      trayClaude.textContent = '⌨ keys go to Claude — click here to compose';
-      return;
-    }
-    trayClaude.className = 'chip claude ' + v.claude.kind;
-    trayClaude.textContent = v.claude.text;
+    claudeChip.className = 'chip claude ' + v.claude.kind;
+    claudeChip.textContent = v.claude.text;
+  }
+
+  // Once, when the room first has two people who can type: say how composing works
+  // (drafts are explicit now — nothing on screen would otherwise hint they exist).
+  let hinted = false;
+  function ghostHint(v) {
+    if (hinted) return;
+    if (v.participants.filter((p) => p.role !== 'viewer').length < 2) return;
+    hinted = true;
+    localToast('compose together: + draft, or double-click the terminal');
+  }
+  function localToast(msg, ms = 6000) {
+    toastEl.textContent = msg;
+    toastEl.hidden = false;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      toastEl.hidden = true;
+    }, ms);
   }
 
   function renderPaused(v) {
@@ -945,24 +962,39 @@ function main() {
   let lastDraftsJson = '';
   function renderDrafts(v) {
     // Rebuild only when the drafts actually changed: every rebuild would destroy a
-    // native drag-selection, and state frames arrive for unrelated reasons (pointers).
+    // native drag-selection, and state frames arrive for unrelated reasons
+    // (pointers). Mid-drag renders are skipped too — pointerup re-syncs.
     const json = JSON.stringify(v.drafts);
-    if (json === lastDraftsJson) return;
+    if (json === lastDraftsJson || draggingDraft) return;
     lastDraftsJson = json;
-    trayDrafts.innerHTML = '';
-    if (v.drafts.length === 0) {
-      const empty = el('div', 'drafts-empty', 'No drafts yet. Start typing to compose one together.');
-      trayDrafts.append(empty);
-      return;
-    }
-    for (const d of v.drafts) {
-      const box = el('div', 'draft' + (d.focusedBySelf ? ' focused' : ''));
-      const border = el('div', 'draft-authors');
+    draftsLayer.innerHTML = '';
+    for (const [i, d] of v.drafts.entries()) {
+      // A box I just spawned by double-click lands where I clicked.
+      if (pendingSpawn && d.focusedBySelf && !place.has(d.id) && d.text === '') {
+        place.set(d.id, { x: pendingSpawn.x, y: pendingSpawn.y });
+        pendingSpawn = null;
+      }
+      const box = el('div', 'fdraft' + (d.focusedBySelf ? ' focused' : ''));
+      box.dataset.boxId = d.id;
+      placeDraft(box, d.id, i);
+
+      const bar = el('div', 'fbar');
+      bar.append(el('span', 'grip', '⠿'));
       for (const a of d.authors) {
         const pill = el('span', 'author-pill', a.name + (a.isSelf ? ' (you)' : ''));
         pill.style.setProperty('--c', a.color);
-        border.append(pill);
+        bar.append(pill);
       }
+      if (d.focusedBySelf) bar.append(el('span', 'send-hint', '↵ sends'));
+      if (v.canCompose) {
+        const del = el('button', 'draft-x', '✕');
+        del.type = 'button';
+        del.title = 'delete this draft';
+        if (!d.focusedBySelf) del.style.marginLeft = 'auto';
+        del.onclick = () => sendMsg({ t: 'ui', action: { kind: 'deldraft', id: d.id } });
+        bar.append(del);
+      }
+
       const body = el('div', 'draft-body');
       for (const seg of d.segments) {
         if (seg.type === 'text') {
@@ -974,31 +1006,81 @@ function main() {
           body.append(caret);
         }
       }
-      box.append(border, body);
-      box.dataset.boxId = d.id;
-      const hints = el('span', 'draft-hints');
-      if (d.focusedBySelf) hints.append(el('span', 'send-hint', '↵ sends'));
-      if (v.canCompose) {
-        const del = el('button', 'draft-x', '✕');
-        del.type = 'button';
-        del.title = 'delete this draft';
-        del.onclick = () => sendMsg({ t: 'ui', action: { kind: 'deldraft', id: d.id } });
-        hints.append(del);
-      }
-      box.append(hints);
+
+      const rsz = el('span', 'rsz', '◢');
+      box.append(bar, body, rsz);
+
+      // Move: drag the ⠿ bar. Resize: drag the ◢ corner. Both are per-viewer.
+      // Double-click the bar snaps the box back home above the input line.
+      bar.addEventListener('pointerdown', (e) => beginDraftDrag(e, box, d.id, 'move'));
+      rsz.addEventListener('pointerdown', (e) => beginDraftDrag(e, box, d.id, 'size'));
+      bar.addEventListener('dblclick', () => {
+        place.delete(d.id);
+        lastDraftsJson = ''; // force a re-render back to the home slot
+        render();
+      });
+      // Clicks never fall through to the terminal beneath.
+      box.addEventListener('mousedown', (e) => e.stopPropagation());
+      box.addEventListener('dblclick', (e) => e.stopPropagation());
+
       // Mouseup, not mousedown: a click places your caret at that spot (blank space
       // → the end); a DRAG leaves the native selection standing — the document-level
-      // key handler below turns delete/typing over it into brain edits.
-      box.addEventListener('mouseup', (e) => {
-        if (e.target.closest('button')) return;
+      // key handler turns delete/typing over it into brain edits.
+      body.addEventListener('mouseup', (e) => {
         const sel = window.getSelection();
         if (sel && !sel.isCollapsed) return; // keep the highlight
         const off = clickCharOffset(body, e.clientX, e.clientY);
         sendMsg({ t: 'ui', action: { kind: 'caret', id: d.id, offset: off == null ? d.text.length : off } });
         setTimeout(focusComposer, 0);
       });
-      trayDrafts.append(box);
+      draftsLayer.append(box);
     }
+  }
+
+  // Apply a draft's per-viewer placement: an explicit {x,y,w}, or the home slot
+  // (pinned above Claude's input line, stacking upward by index).
+  function placeDraft(box, id, i) {
+    const p = place.get(id);
+    if (!p) {
+      box.classList.add('home');
+      box.style.setProperty('--stack', String(i));
+      return;
+    }
+    box.classList.remove('home');
+    box.style.left = p.x + 'px';
+    box.style.top = p.y + 'px';
+    box.style.bottom = 'auto';
+    box.style.transform = 'none';
+    if (p.w) box.style.width = p.w + 'px';
+  }
+
+  function beginDraftDrag(e, box, id, mode) {
+    if (e.target.closest('button')) return;
+    e.preventDefault();
+    draggingDraft = true;
+    const stageRect = stage.getBoundingClientRect();
+    const boxRect = box.getBoundingClientRect();
+    const start = { x: e.clientX, y: e.clientY };
+    const orig = { x: boxRect.left - stageRect.left, y: boxRect.top - stageRect.top, w: boxRect.width };
+    const move = (ev) => {
+      const dx = ev.clientX - start.x;
+      const dy = ev.clientY - start.y;
+      const cur =
+        mode === 'move'
+          ? { ...(place.get(id) ?? {}), x: orig.x + dx, y: orig.y + dy }
+          : { x: orig.x, y: orig.y, w: Math.max(220, orig.w + dx) };
+      place.set(id, cur);
+      placeDraft(box, id, 0);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      draggingDraft = false;
+      lastDraftsJson = ''; // re-sync with the latest state now that the drag ended
+      render();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
   }
 
   // (node, offset) inside a draft body → display-character offset. Caret spans hold
@@ -1054,28 +1136,64 @@ function main() {
     return { boxId, start: Math.min(start, end), end: Math.max(start, end) };
   }
 
+  // The queue lives in the header: a quiet chip (amber ring while anything waits,
+  // invisible when empty) that opens a popover of the attributed waiting line.
   function renderQueue(v) {
-    trayQueue.innerHTML = '';
+    queueChip.hidden = v.queue.length === 0;
+    queueChip.textContent = `queue ${v.queue.length}`;
     if (v.queue.length === 0) {
-      trayQueue.hidden = true;
+      queuePop.hidden = true;
       return;
     }
-    trayQueue.hidden = false;
-    trayQueue.append(el('div', 'queue-label', 'Queued'));
+    if (!queuePop.hidden) fillQueuePop(v);
+  }
+  function fillQueuePop(v) {
+    queuePop.innerHTML = '';
+    queuePop.append(el('div', 'queue-label', 'Waiting for Claude — fires one per idle'));
     for (const q of v.queue) {
       const chip = el('div', 'queue-chip');
       const who = el('span', 'queue-who', q.name);
       who.style.setProperty('--c', q.color);
       chip.append(el('span', 'queue-n', '#' + q.n), who, el('span', 'queue-text', q.text));
-      trayQueue.append(chip);
+      const act = el('span', 'queue-act');
+      if (q.isMine) {
+        const edit = el('button', 'ctrl tiny', 'edit');
+        edit.onclick = () => {
+          const t = window.prompt('Edit your queued prompt:', q.text);
+          if (t != null && t.trim()) sendCommand(`/queue edit ${q.n} ${t.trim()}`);
+        };
+        act.append(edit);
+      }
+      if (q.isMine || v.canDrive) {
+        const del = el('button', 'ctrl tiny end', '✕');
+        del.onclick = () => sendCommand(`/queue del ${q.n}`);
+        act.append(del);
+      }
+      chip.append(act);
+      queuePop.append(chip);
     }
   }
+  queueChip.addEventListener('click', () => {
+    if (!queuePop.hidden) {
+      queuePop.hidden = true;
+      return;
+    }
+    const v = lastState ? overlayView(lastState, selfId) : null;
+    if (!v || v.queue.length === 0) return;
+    fillQueuePop(v);
+    const r = queueChip.getBoundingClientRect();
+    queuePop.style.left = Math.max(12, Math.min(r.left, window.innerWidth - 480)) + 'px';
+    queuePop.style.top = r.bottom + 8 + 'px';
+    queuePop.hidden = false;
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (!queuePop.hidden && !queuePop.contains(e.target) && e.target !== queueChip) queuePop.hidden = true;
+  });
 
   function renderComposer(v) {
     const can = v.canCompose;
     composer.disabled = !can;
     newDraftBtn.disabled = !can;
-    viewerNote.hidden = can;
   }
 
   function renderCursors(v) {

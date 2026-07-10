@@ -90,9 +90,11 @@ Host controls (buttons in your tab, or `/`-commands): set a role · kick · paus
 
 ## Composing together
 
-Each draft is its own author-tagged box, and everyone's live cursor shows up in it — two named cursors writing one prompt together. **Enter** sends only the box your cursor is in; move your cursor into someone else's box to co-write it. **+ New draft** starts a fresh draft of your own. Standard editing keys work inside a draft (shift+enter for a newline, word-jump, kill-line, home/end).
+The whole page is the terminal. Drafts are small glass boxes **floating on top of it** — make one with the **+ draft** chip (or double-click an empty spot, and it spawns right there). Each draft is author-tagged, and everyone's live caret shows up in it — two named carets writing one prompt together. **Enter** sends the box your caret is in; click into someone else's box to co-write it; **Esc** steps out; drag the ⠿ bar to move it, the ◢ corner to resize, ✕ deletes. Standard editing keys work inside (shift+enter newline, word-jump, kill-line, ⌘⌫, drag-select).
 
-When Claude is busy, sent drafts wait in a numbered queue. Manage yours with `/queue del <n>` and `/queue edit <n> <text>` — you can edit or delete your own item; a driver or the host can delete any.
+A **driver or the host** with no draft focused types **straight into Claude** — arrows and Enter drive Claude's own menus (`/model`, permission asks) exactly like sitting at the terminal. The ⌨ chip glows while your keys go raw.
+
+When Claude is busy, sent drafts wait in an attributed queue — the **queue n** chip in the header opens it (edit/delete your own; a driver or the host can delete any).
 
 ## One thing to really understand
 

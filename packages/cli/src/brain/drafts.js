@@ -380,7 +380,14 @@ export class Drafts {
         return { changed: this.#moveBox(userId, -1) };
       case 'down':
         return { changed: this.#moveBox(userId, 1) };
-      case 'escape':
+      case 'escape': {
+        // Esc steps OUT of the draft (window-like); the box lives on unfocused
+        // (an empty one prunes). Esc with no focus never reaches here — the gate
+        // routes it to Claude as an interrupt.
+        const had = this.activeBox(userId) !== null;
+        this.#leaveCurrent(userId);
+        return { changed: had };
+      }
       default:
         return { changed: false };
     }

@@ -36,6 +36,7 @@ export const VIEWER_TOAST = "you're a viewer — ask the host for a role";
  * @param {string|Buffer} bytes  raw terminal bytes for this keypress
  * @param {object} [ctx]
  * @param {boolean} [ctx.armed]      true iff a permission ask is pending (hook-armed)
+ * @param {boolean} [ctx.composing]  true iff this user's caret is in a draft box
  * @param {Set<string>} [ctx.toasted] userIds already shown the viewer toast (mutated)
  * @returns {{kind:'draft', bytes:string}
  *          |{kind:'pty', data:string}
@@ -59,10 +60,12 @@ export function dispatch(userId, role, bytes, ctx = {}) {
     return atLeast(role, 'driver') ? { kind: 'pty', data: s } : { kind: 'drop' };
   }
 
-  // A lone Escape interrupts Claude's current turn — prompter and up (spec: anyone
-  // who can prompt can interrupt). A longer escape sequence (arrow keys, etc.) is
-  // NOT an interrupt; it falls through to draft editing below.
+  // A lone Escape: composing → step out of the draft (window-like, handled by the
+  // editor); not composing → interrupt Claude's current turn, prompter and up
+  // (spec: anyone who can prompt can interrupt — now one extra Esc away while
+  // composing). A longer escape sequence (arrow keys, etc.) is never an interrupt.
   if (s === ESC) {
+    if (ctx.composing) return { kind: 'draft', bytes: s };
     return atLeast(role, 'prompter') ? { kind: 'pty', data: s } : viewerBlock(userId, toasted);
   }
 
