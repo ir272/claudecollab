@@ -16,8 +16,8 @@ import { atLeast } from './state.js';
 export const COMMAND_NAMES = new Set(['role', 'kick', 'pause', 'resume', 'recap', 'end', 'queue']);
 
 /** Roles /role can assign (never host — the host seat is fixed). */
-const ASSIGNABLE_ROLES = new Set(['driver', 'prompter', 'viewer']);
-const ROLE_USAGE = 'usage: /role @name driver|prompter|viewer';
+const ASSIGNABLE_ROLES = new Set(['prompter', 'viewer']);
+const ROLE_USAGE = 'usage: /role @name prompter|viewer';
 const KICK_USAGE = 'usage: /kick @name';
 const QUEUE_USAGE = 'usage: /queue del <n> | /queue edit <n> <text>';
 
@@ -56,7 +56,7 @@ export function parse(text) {
       return { name, mention };
     }
     case 'queue': {
-      // /queue del <n>  → delete item n (author, or driver/host on any item)
+      // /queue del <n>  → delete item n (author, or the host on any item)
       // /queue edit <n> <text> → rewrite item n (author only). n is 1-based, matching
       // the queue block the renderer numbers.
       const sub = (parts[1] ?? '').toLowerCase();
@@ -82,7 +82,7 @@ export function parse(text) {
  * Is `role` allowed to run command `name`? (spec §per-role input table)
  *   • /recap /queue                        → prompter and up
  *   • /role /kick /pause /resume /end      → host only
- * /queue defers per-item permission (author vs driver/host) to the Queue methods;
+ * /queue defers per-item permission (author vs host) to the Queue methods;
  * this only gates who may attempt a queue edit/delete at all (spec §queue).
  * @param {string} name
  * @param {string} role

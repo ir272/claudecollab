@@ -17,7 +17,7 @@
 //   URL and is auto-admitted as host → guest A knocks (named key) → the host tab admits
 //   it from the browser → the host tab promotes A to prompter → A composes a draft that
 //   reaches Claude, hits a permission ask, and A queues a second prompt while busy → A's
-//   prompter `y` is REJECTED → the host tab promotes A to driver → A's `y` is ACCEPTED
+//   a viewer's `y` is REJECTED → back to prompter → A's `y` is ACCEPTED
 //   and the queue drains → the host tab kicks A → the host tab ends the session → assert
 //   the mirror, the attributed queue in the overlay state, the gate decision, and
 //   session.md.
@@ -337,17 +337,19 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   a.type('use tailwind for all of it\r');
   await hostTab.waitForState((s) => s.queue.some((q) => q.text === 'use tailwind for all of it' && q.author === aId));
 
-  // ── the gate: a prompter's `y` is REJECTED (never reaches Claude) ────────────
+  // ── the gate: a VIEWER's `y` is REJECTED (never reaches Claude) ──────────────
+  hostTab.command('/role @a viewer');
+  await hostTab.waitForState((s) => s.participants.find((p) => p.id === aId)?.role === 'viewer');
   a.type('y');
   await delay(700); // long enough that a wrongly-forwarded y would have answered the ask
-  assert.ok(!host.has('permission granted'), "prompter's y did not answer the permission ask");
+  assert.ok(!host.has('permission granted'), "viewer's y did not answer the permission ask");
   assert.ok(!a.has('permission granted'), 'guest saw no approval from the rejected y');
 
-  // ── the host tab promotes A to driver; now A's `y` is ACCEPTED ───────────────
-  hostTab.command('/role @a driver');
-  await hostTab.waitForState((s) => s.participants.find((p) => p.id === aId)?.role === 'driver');
+  // ── back to prompter — prompters answer asks now (the driver tier is gone) ────
+  hostTab.command('/role @a prompter');
+  await hostTab.waitForState((s) => s.participants.find((p) => p.id === aId)?.role === 'prompter');
   a.type('y');
-  await host.waitFor('[claude] permission granted'); // driver's y reached Claude
+  await host.waitFor('[claude] permission granted'); // prompter's y reached Claude
   await a.waitFor('[claude] permission granted');
   // …and going idle drains the queue in order (fail-closed drain fired on 'idle').
   await host.waitFor('[claude] prompt: use tailwind for all of it');
@@ -376,7 +378,7 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   assert.match(md, /\*\*a\*\*: make the hero full-bleed/); // prompt 1, attributed to A
   assert.match(md, /\*\*a\*\*: use tailwind for all of it/); // prompt 2, attributed to A
   assert.match(md, /set a to prompter/); // role change recorded
-  assert.match(md, /set a to driver/); // role change recorded
+  assert.match(md, /set a to viewer/); // role change recorded
   assert.match(md, /a was kicked/); // moderation recorded
   assert.match(md, /src\/app\.js/); // PostToolUse file surfaced in "Files touched"
 });

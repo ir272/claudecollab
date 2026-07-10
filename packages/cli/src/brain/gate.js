@@ -8,10 +8,10 @@
 //   1. dispatch(userId, role, bytes, ctx) — byte-level routing of a keypress.
 //   2. classifySend / sendAllowed          — once a draft is SENT, what is it
 //      (prompt vs Claude slash vs bash vs claude-share command) and may this role
-//      send it? (Composing is prompter+, but only driver+ may fire /clear or !ls.)
+//      send it? (Anyone who can prompt may also fire /clear or !ls.)
 //
 // Fail closed: a y/n routes to Claude ONLY when ctx.armed is true (an 'ask'
-// Notification is pending) AND the sender is driver or host. If we are not certain
+// Notification is pending) AND the sender can prompt. If we are not certain
 // an ask is up, a lone "y"/"n" is just a character typed into a draft — even from
 // the host — so a bare keystroke can never leak to Claude by accident. The host
 // typing "yes, ship it" while composing must land in the draft, not answer a
@@ -32,7 +32,7 @@ export const VIEWER_TOAST = "you're a viewer — ask the host for a role";
  * Route one input event from a participant.
  *
  * @param {string} userId
- * @param {string} role   viewer | prompter | driver | host
+ * @param {string} role   viewer | prompter | host
  * @param {string|Buffer} bytes  raw terminal bytes for this keypress
  * @param {object} [ctx]
  * @param {boolean} [ctx.armed]      true iff a permission ask is pending (hook-armed)
@@ -54,10 +54,10 @@ export function dispatch(userId, role, bytes, ctx = {}) {
     return role === 'host' ? { kind: 'pty', data: s } : { kind: 'detach' };
   }
 
-  // Mode flip (Shift+Tab) — driver and up only; silently dropped otherwise. A
+  // Mode flip (Shift+Tab) — prompter and up; silently dropped otherwise. A
   // viewer never even reaches the toast path here (mode flips aren't "typing").
   if (s === SHIFT_TAB) {
-    return atLeast(role, 'driver') ? { kind: 'pty', data: s } : { kind: 'drop' };
+    return atLeast(role, 'prompter') ? { kind: 'pty', data: s } : { kind: 'drop' };
   }
 
   // A lone Escape: composing → step out of the draft (window-like, handled by the
@@ -69,12 +69,12 @@ export function dispatch(userId, role, bytes, ctx = {}) {
     return atLeast(role, 'prompter') ? { kind: 'pty', data: s } : viewerBlock(userId, toasted);
   }
 
-  // y/n answering a permission ask — driver and up, and ONLY while a permission ask
+  // y/n answering a permission ask — prompter and up, and ONLY while a permission ask
   // is armed (an 'ask' Notification is pending). Fail closed: when we are not certain
   // an ask is up, a lone y/n is ordinary draft input for everyone — the host too — so
   // "yes, ship it" typed while composing is never leaked to Claude as a bare
   // keystroke (spec §fail-closed: y/n is a permission answer, not a stray draft char).
-  if (/^[yn]$/i.test(s) && armed && atLeast(role, 'driver') && !ctx.composing) {
+  if (/^[yn]$/i.test(s) && armed && atLeast(role, 'prompter') && !ctx.composing) {
     return { kind: 'pty', data: s };
   }
 
@@ -113,7 +113,7 @@ export function classifySend(text) {
 
 /**
  * May `role` send a draft of this kind? Prompts are prompter+; Claude slash
- * commands and `!` bash are driver+. Command role-gating is per-command and lives
+ * commands and `!` bash too. Command role-gating is per-command and lives
  * in commands.permitted(), so 'command' defers (returns true) here.
  * @param {'command'|'claude-slash'|'bash'|'prompt'} kind
  * @param {string} role
@@ -125,7 +125,7 @@ export function sendAllowed(kind, role) {
       return atLeast(role, 'prompter');
     case 'claude-slash':
     case 'bash':
-      return atLeast(role, 'driver');
+      return atLeast(role, 'prompter');
     case 'command':
       return true;
     default:

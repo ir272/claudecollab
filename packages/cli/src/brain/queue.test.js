@@ -47,12 +47,12 @@ test('an author can edit their own queued item; nobody else can', () => {
   const it = q.enqueue('draftt', 'ian');
   assert.equal(q.edit(it.id, 'fixed', 'ian', 'prompter'), true);
   assert.equal(q.items[0].text, 'fixed');
-  assert.equal(q.edit(it.id, 'hijack', 'siddh', 'driver'), false, 'a driver cannot edit someone else’s item');
+  assert.equal(q.edit(it.id, 'hijack', 'siddh', 'host'), false, 'even the host cannot edit someone else’s item');
   assert.equal(q.items[0].text, 'fixed');
   assert.equal(q.edit('missing', 'x', 'ian', 'host'), false);
 });
 
-// ── delete: author OR host/driver (spec) ────────────────────────────────────────
+// ── delete: author OR the host (spec) ───────────────────────────────────────────
 
 test('an author deletes their own item', () => {
   const q = new Queue();
@@ -61,12 +61,12 @@ test('an author deletes their own item', () => {
   assert.equal(q.length, 0);
 });
 
-test('a prompter cannot delete someone else’s item; a driver or host can', () => {
+test('a prompter cannot delete someone else’s item; the host can', () => {
   const q = new Queue();
   const it = q.enqueue('ians', 'ian');
   assert.equal(q.remove(it.id, 'siddh', 'prompter'), false, 'prompter has no delete-any power');
   assert.equal(q.length, 1);
-  assert.equal(q.remove(it.id, 'siddh', 'driver'), true, 'driver deletes any');
+  assert.equal(q.remove(it.id, 'siddh', 'host'), true, 'the host deletes any');
 
   const it2 = q.enqueue('again', 'ian');
   assert.equal(q.remove(it2.id, 'host', 'host'), true, 'host deletes any');

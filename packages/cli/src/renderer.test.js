@@ -63,7 +63,7 @@ test('truncateToWidth never splits a wide char across the budget', () => {
 // ── ROLE_GLYPH ────────────────────────────────────────────────────────────────
 
 test('ROLE_GLYPH covers every spec role', () => {
-  for (const role of ['host', 'driver', 'prompter', 'viewer']) {
+  for (const role of ['host', 'prompter', 'viewer']) {
     assert.equal(typeof ROLE_GLYPH[role], 'string');
     assert.ok(ROLE_GLYPH[role].length >= 1, role);
   }

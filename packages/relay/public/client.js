@@ -144,7 +144,7 @@ export function pasteBytes(text) {
  * name-based /role or /kick could hit the wrong person or nobody. The id is unambiguous
  * and the brain applies it directly, bypassing @-mention resolution (finding 4).
  * @param {string} id    the participant id (from the overlay state)
- * @param {string} role  driver | prompter | viewer
+ * @param {string} role  prompter | viewer
  */
 export function roleAction(id, role) {
   return { t: 'ui', action: { kind: 'role', id, role } };
@@ -190,12 +190,11 @@ const colorFor = (m, id) => m.get(id)?.color ?? '#9aa4b2';
 
 /** What a role may do in the tray (mirrors gate.js semantics, client side). */
 export function roleCaps(role) {
-  const rank = { viewer: 0, prompter: 1, driver: 2, host: 3 }[role] ?? 0;
+  const rank = { viewer: 0, prompter: 1, host: 2 }[role] ?? 0;
   return {
     isViewer: rank < 1,
-    canCompose: rank >= 1, // prompter+
-    canDrive: rank >= 2, // driver+ (answer asks, slash/bash)
-    isHost: rank >= 3,
+    canCompose: rank >= 1, // prompter+ (typing, asks, slash/bash — all of it)
+    isHost: rank >= 2,
   };
 }
 
@@ -406,8 +405,8 @@ function main() {
   let pendingFrames = [];
   let lastViewKey = '';
   let retuneTries = 0; // bounded font-retune attempts while xterm re-measures
-  // Direct mode is DERIVED, not toggled: a driver with no draft focused types
-  // straight into Claude. Updated from every state frame.
+  // Direct mode is DERIVED, not toggled: anyone who can type, with no draft
+  // focused, types straight into Claude. Updated from every state frame.
   let directOn = false;
   // Draft placement is SHARED (brain-owned, stage fractions). Client state here is
   // only for interaction smoothness: the box being dragged and the spawn point of
@@ -808,7 +807,7 @@ function main() {
   });
   // Direct mode: translate a keydown to the raw bytes Claude's own UI expects —
   // a superset of the draft keymap (Tab, Ctrl+letter) since nothing is off-limits
-  // for a driver typing at the "real" terminal. ⌘ stays with the browser.
+  // for someone typing at the "real" terminal. ⌘ stays with the browser.
   function directKeyBytes(e) {
     if (e.metaKey) return null;
     if (e.ctrlKey) {
@@ -820,7 +819,7 @@ function main() {
   }
   // Click the bare terminal while composing → step out of the draft (Esc). The
   // brain sees the Esc as "leave the box" (never an interrupt while composing);
-  // for a driver the next keystroke is then raw to Claude.
+  // the next keystroke is then raw to Claude.
   stage.addEventListener('mousedown', (e) => {
     if (e.target.closest('.fdraft')) return;
     const v = lastState ? overlayView(lastState, selfId) : null;
@@ -949,7 +948,7 @@ function main() {
     if (!lastState) return;
     const v = overlayView(lastState, selfId);
     // Direct is derived: anyone who can prompt, with no draft focused, types
-    // straight into Claude (asks and mode flips stay driver-gated in the brain).
+    // straight into Claude.
     const selfComposing = v.drafts.some((d) => d.focusedBySelf);
     directOn = v.canCompose && !selfComposing;
     directBtn.hidden = !directOn; // a passive "keys go into Claude" indicator
@@ -1255,7 +1254,7 @@ function main() {
         };
         act.append(edit);
       }
-      if (q.isMine || v.canDrive) {
+      if (q.isMine || v.isHost) {
         const del = el('button', 'ctrl tiny end', '✕');
         del.onclick = () => sendCommand(`/queue del ${q.n}`);
         act.append(del);
@@ -1377,7 +1376,7 @@ function main() {
     const canManage = (loc.isHostTab || v.isHost) && p.role !== 'host' && !p.isSelf;
     if (canManage) {
       const row = el('div', 'pop-row');
-      for (const r of ['viewer', 'prompter', 'driver']) {
+      for (const r of ['viewer', 'prompter']) {
         const b = el('button', 'ctrl tiny' + (r === p.role ? ' active' : ''), r);
         // Target by id, not @name: names are guest-claimed and non-unique (finding 4).
         b.onclick = () => {

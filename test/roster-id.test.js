@@ -5,7 +5,7 @@
 // claim the SAME name and proves that an id-carrying {t:'ui'} role/kick action always
 // hits the intended one:
 //
-//   two guests both named "sam" join → the host tab promotes the SECOND to driver by id
+//   two guests both named "sam" join → the host tab demotes the SECOND to viewer by id
 //   (the first stays prompter — a first-match name resolver could never do this) → the
 //   host tab kicks the SECOND by id (the first survives) → assert via the overlay state.
 
@@ -271,11 +271,11 @@ test('roster role/kick target a duplicate-named guest by id, not by @-mention (f
   assert.notEqual(sam1Id, sam2Id, 'two guests, same name, distinct ids');
   await hostTab.waitForState((s) => s.participants.some((p) => p.id === sam1Id) && s.participants.some((p) => p.id === sam2Id));
 
-  // ── promote the SECOND sam to driver BY ID — the first must stay prompter ─────
+  // ── demote the SECOND sam to viewer BY ID — the first must stay prompter ──────
   // (a first-match @-mention resolver could only ever promote sam1; getting sam2 the
-  // driver role while sam1 stays prompter proves the action targeted the id.)
-  hostTab.roleById(sam2Id, 'driver');
-  const roled = await hostTab.waitForState((s) => s.participants.find((p) => p.id === sam2Id)?.role === 'driver');
+  // viewer role while sam1 stays prompter proves the action targeted the id.)
+  hostTab.roleById(sam2Id, 'viewer');
+  const roled = await hostTab.waitForState((s) => s.participants.find((p) => p.id === sam2Id)?.role === 'viewer');
   assert.equal(roled.participants.find((p) => p.id === sam1Id).role, 'prompter', 'the OTHER sam is untouched');
 
   // ── kick the SECOND sam BY ID — the first survives ───────────────────────────

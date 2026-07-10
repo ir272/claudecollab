@@ -77,13 +77,12 @@ Watch the bottom status line. It shows a link like `http://127.0.0.1:8787/brave-
 
 ## Who can do what
 
-Roles are set by the host from the host tab (or `/role @name driver`) and shown to the whole room.
+Roles are set by the host from the host tab (or `/role @name prompter`) and shown to the whole room.
 
-| Role | Sees the session | Types drafts | Answers permission asks · flips modes |
+| Role | Sees the session | Types · answers asks · slash/bash | Admit · kick · pause · end |
 |---|---|---|---|
 | 👁 viewer | ✅ | ❌ | ❌ |
 | ✎ prompter *(default)* | ✅ | ✅ | ❌ |
-| ⚑ driver | ✅ | ✅ | ✅ |
 | ★ host | ✅ | ✅ | ✅ |
 
 Host controls (buttons in your tab, or `/`-commands): set a role · kick · pause / resume · recap · end.
@@ -92,9 +91,9 @@ Host controls (buttons in your tab, or `/`-commands): set a role · kick · paus
 
 The whole page is the terminal. Drafts are small glass boxes **floating on top of it** — make one with the **+ draft** chip (or double-click an empty spot, and it spawns right there). Each draft is author-tagged, and everyone's live caret shows up in it — two named carets writing one prompt together. **Enter** sends the box your caret is in; click into someone else's box to co-write it; **Esc** steps out; drag the ⠿ bar to move it, the ◢ corner to resize, ✕ deletes. Standard editing keys work inside (shift+enter newline, word-jump, kill-line, ⌘⌫, drag-select).
 
-Anyone who can prompt, with no draft focused, types **straight into Claude** — arrows and Enter drive Claude's own menus (`/model`) exactly like sitting at the terminal. The ⌨ chip glows while your keys go raw. Permission asks and mode flips stay **driver/host** territory: a prompter's typing pauses while an ask is pending (Esc still interrupts).
+Anyone who can prompt, with no draft focused, types **straight into Claude** — arrows and Enter drive Claude's own menus (`/model`), permission asks, everything — exactly like sitting at the terminal. The ⌨ chip glows while your keys go raw.
 
-When Claude is busy, sent drafts wait in an attributed queue — the **queue n** chip in the header opens it (edit/delete your own; a driver or the host can delete any).
+When Claude is busy, sent drafts wait in an attributed queue — the **queue n** chip in the header opens it (edit/delete your own; the host can delete any).
 
 ## One thing to really understand
 
@@ -131,7 +130,7 @@ test/roster-id.test.js — the host tab targets duplicate-named guests by id, en
 
 **The terminal is the engine room.** Claude gets a PTY one row shorter than your real terminal, so its cursor can never touch the bottom row — that's where claude-share paints its single status line. Everything multiplayer (draft boxes, the queue, join requests, roles) lives in your browser tab, not the terminal.
 
-**How state is known:** claude-share injects Claude Code hooks (`UserPromptSubmit`, `Stop`, `Notification`, `PostToolUse`) that post to a local socket. That's how it knows Claude is busy, idle, or waiting on a permission ask — no guessing from pixels. If a signal is ever ambiguous, it fails closed: the queue won't drain and only a driver or the host answers.
+**How state is known:** claude-share injects Claude Code hooks (`UserPromptSubmit`, `Stop`, `Notification`, `PostToolUse`) that post to a local socket. That's how it knows Claude is busy, idle, or waiting on a permission ask — no guessing from pixels. If a signal is ever ambiguous, it fails closed: the queue won't drain and viewers can never answer.
 
 **The relay stores nothing.** Room codes, roles, and the queue all live in the host process. Kill the relay and everyone reconnects with nothing lost; kill the host and the room is simply over.
 

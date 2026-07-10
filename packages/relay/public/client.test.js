@@ -105,11 +105,10 @@ test('clamp01 + throttleReady', () => {
   assert.equal(throttleReady(0, 10, 33), false);
 });
 
-test('roleCaps: the tray capability gate per role', () => {
-  assert.deepEqual(roleCaps('viewer'), { isViewer: true, canCompose: false, canDrive: false, isHost: false });
-  assert.deepEqual(roleCaps('prompter'), { isViewer: false, canCompose: true, canDrive: false, isHost: false });
-  assert.deepEqual(roleCaps('driver'), { isViewer: false, canCompose: true, canDrive: true, isHost: false });
-  assert.deepEqual(roleCaps('host'), { isViewer: false, canCompose: true, canDrive: true, isHost: true });
+test('roleCaps: the capability gate per role (viewer / prompter / host)', () => {
+  assert.deepEqual(roleCaps('viewer'), { isViewer: true, canCompose: false, isHost: false });
+  assert.deepEqual(roleCaps('prompter'), { isViewer: false, canCompose: true, isHost: false });
+  assert.deepEqual(roleCaps('host'), { isViewer: false, canCompose: true, isHost: true });
   assert.equal(roleCaps(undefined).isViewer, true, 'unknown role fails closed to viewer');
 });
 
@@ -126,7 +125,7 @@ test('claudeLabel / seenLabel / shortFp', () => {
 
 test('roleAction/kickAction target the participant id, never the claimed name (finding 4)', () => {
   // Two guests can claim the SAME name; the roster action must carry the unambiguous id.
-  assert.deepEqual(roleAction('g2', 'driver'), { t: 'ui', action: { kind: 'role', id: 'g2', role: 'driver' } });
+  assert.deepEqual(roleAction('g2', 'prompter'), { t: 'ui', action: { kind: 'role', id: 'g2', role: 'prompter' } });
   assert.deepEqual(kickAction('g2'), { t: 'ui', action: { kind: 'kick', id: 'g2' } });
   // The id is used verbatim even when a name has spaces / non-word chars (un-mentionable).
   assert.equal(kickAction('uuid-with-space-name').action.id, 'uuid-with-space-name');

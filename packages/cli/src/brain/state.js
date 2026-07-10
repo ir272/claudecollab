@@ -8,10 +8,10 @@
 // share one source of truth for "who outranks whom".
 
 /** Role names, lowest privilege first. */
-export const ROLES = Object.freeze(['viewer', 'prompter', 'driver', 'host']);
+export const ROLES = Object.freeze(['viewer', 'prompter', 'host']);
 
 /** Numeric privilege rank — higher answers more (spec §roles table). */
-export const ROLE_RANK = Object.freeze({ viewer: 0, prompter: 1, driver: 2, host: 3 });
+export const ROLE_RANK = Object.freeze({ viewer: 0, prompter: 1, host: 2 });
 
 /**
  * Is `role` at least as privileged as `min`? Fails closed: an unknown actor role
@@ -179,7 +179,7 @@ export class RoomState {
 
   /**
    * Set a guest's role. Refuses to touch the host, to promote anyone to host, or
-   * to set an unknown role (spec: host is fixed; /role targets driver|prompter|viewer).
+   * to set an unknown role (spec: host is fixed; /role targets prompter|viewer).
    */
   setRole(id, role) {
     const p = this.participants.get(id);

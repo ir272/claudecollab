@@ -403,7 +403,7 @@ async function main() {
 
     if (!sendAllowed(cls.kind, role)) {
       const what = cls.kind === 'bash' ? 'run bash' : cls.kind === 'claude-slash' ? 'use slash commands' : 'send that';
-      notify(userId, `you can't ${what} — ask the host for a driver role`);
+      notify(userId, `you can't ${what} — ask the host for a role that can type`);
       return;
     }
     // Bound for Claude. Log by display name (card is display-only); attribute the
@@ -519,7 +519,7 @@ async function main() {
         break;
       case 'queue': {
         // Reachable path for Queue.edit()/remove() (spec §queue): an author edits or
-        // deletes their own queued item; a driver/host deletes any. Per-item rights
+        // deletes their own queued item; the host deletes any. Per-item rights
         // are enforced by the Queue methods; the index is 1-based (the renderer's
         // numbering). handleCommand only runs for prompter+, so viewers never arrive.
         const item = queue.items[parsed.index - 1];
@@ -614,7 +614,7 @@ async function main() {
       case 'draft': {
         // Drafts are created EXPLICITLY (the + draft chip / a double-click send
         // Ctrl+N) — stray typing with no focused box is dropped, with a nudge when
-        // it looked like real text (prompters only reach here; drivers went raw).
+        // it looked like real text (only viewers' strays reach here now).
         if (!drafts.activeBox(userId) && !String(eff.bytes).includes('\x0e')) {
           if (/^[^\x00-\x1f\x7f]/.test(String(eff.bytes))) nudge(userId);
           break;
@@ -767,13 +767,13 @@ async function main() {
       repaintBand();
       return;
     }
-    // The ✕ on a draft box: authors delete their own; a driver or the host, any.
+    // The ✕ on a draft box: authors delete their own; the host, any.
     if (action.kind === 'deldraft') {
       if (!atLeast(role, 'prompter')) return;
       const box = drafts.boxes.find((b) => b.id === action.id);
       if (!box) return;
       const mine = box.authors.has(id) || box.cursors.has(id);
-      if (!mine && !atLeast(role, 'driver')) return notify(id, "you can only delete a draft you're part of");
+      if (!mine && !atLeast(role, 'host')) return notify(id, "you can only delete a draft you're part of");
       if (drafts.deleteBox(action.id)) repaintBand();
       return;
     }
@@ -887,18 +887,10 @@ async function main() {
       const role = state.roleOf(actor) ?? 'viewer';
       const composing = drafts.activeBox(actor) !== null;
       // Anyone who can prompt and has no draft focused is AT the terminal: keys go
-      // raw to Claude (composing is opt-in). Two keys stay ours even then: Ctrl+C
-      // (an ssh guest's "leave the room") and Ctrl+N (the + draft chip). The
-      // driver-only powers survive the open door: a prompter can't flip permission
-      // modes, and while an ask is pending their typing pauses (Esc still passes —
-      // anyone who can prompt can interrupt).
+      // raw to Claude (composing is opt-in) — asks, modes, everything (prompter and
+      // host are the two typing roles now). Two keys stay ours even then: Ctrl+C
+      // (an ssh guest's "leave the room") and Ctrl+N (the + draft chip).
       if (!composing && atLeast(role, 'prompter') && human !== '\x03' && human !== '\x0e') {
-        if (!atLeast(role, 'driver')) {
-          if (human === '\x1b[Z') return; // Shift+Tab mode flip: driver+
-          if (claude.state === 'ask' && human !== '\x1b') {
-            return nudge(actor, 'a permission ask is pending — only a driver or the host can answer');
-          }
-        }
         return pty.write(human);
       }
       applyInput(actor, dispatch(actor, role, Buffer.from(human, 'binary'), { armed, toasted, composing }));
@@ -987,7 +979,7 @@ async function main() {
     });
     hooks.on('ask', () => {
       claude.state = 'ask';
-      armed = true; // the ONLY thing that arms driver+ y/n → Claude (spec: gate on events)
+      armed = true; // the ONLY thing that arms a composing-side y/n → Claude (spec: gate on events)
       repaintBand();
     });
     hooks.on('tool', (p) => {

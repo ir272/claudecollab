@@ -4,15 +4,14 @@ import { RoomState, ROLE_RANK, atLeast, FLOOR_COLS, FLOOR_ROWS, HOST_ID, PALETTE
 
 // ── role ranking ────────────────────────────────────────────────────────────
 
-test('ROLE_RANK orders viewer < prompter < driver < host', () => {
+test('ROLE_RANK orders viewer < prompter < host', () => {
   assert.ok(ROLE_RANK.viewer < ROLE_RANK.prompter);
-  assert.ok(ROLE_RANK.prompter < ROLE_RANK.driver);
-  assert.ok(ROLE_RANK.driver < ROLE_RANK.host);
+  assert.ok(ROLE_RANK.prompter < ROLE_RANK.host);
 });
 
 test('atLeast compares roles, failing closed on unknowns', () => {
-  assert.equal(atLeast('driver', 'prompter'), true);
-  assert.equal(atLeast('prompter', 'driver'), false);
+  assert.equal(atLeast('host', 'prompter'), true);
+  assert.equal(atLeast('prompter', 'host'), false);
   assert.equal(atLeast('host', 'host'), true);
   assert.equal(atLeast('viewer', 'viewer'), true);
   assert.equal(atLeast(undefined, 'viewer'), false, 'unknown role is below everything');
@@ -41,13 +40,13 @@ test('guests default to prompter and can be overridden', () => {
 test('setRole changes a guest role but refuses host and unknown roles', () => {
   const s = new RoomState();
   s.addGuest('g1', { name: 'siddh' });
-  assert.equal(s.setRole('g1', 'driver'), true);
-  assert.equal(s.roleOf('g1'), 'driver');
+  assert.equal(s.setRole('g1', 'prompter'), true);
+  assert.equal(s.roleOf('g1'), 'prompter');
   assert.equal(s.setRole('g1', 'host'), false, 'cannot promote a guest to host');
   assert.equal(s.setRole('g1', 'wizard'), false, 'unknown role rejected');
-  assert.equal(s.roleOf('g1'), 'driver', 'role unchanged after a rejected set');
+  assert.equal(s.roleOf('g1'), 'prompter', 'role unchanged after a rejected set');
   assert.equal(s.setRole(HOST_ID, 'viewer'), false, 'cannot demote the host');
-  assert.equal(s.setRole('nobody', 'driver'), false);
+  assert.equal(s.setRole('nobody', 'prompter'), false);
 });
 
 test('removeGuest drops a guest but never the host', () => {
@@ -64,28 +63,28 @@ test('removeGuest drops a guest but never the host', () => {
 test('a returning fingerprint resumes the role it last held this session', () => {
   const s = new RoomState({ defaultRole: 'prompter' });
   s.addGuest('c1', { name: 'siddh', fp: 'SHA256:sid' });
-  s.setRole('c1', 'driver'); // host promoted siddh
+  s.setRole('c1', 'prompter'); // host promoted siddh
   s.removeGuest('c1'); // wifi drops
 
   // Same key reconnects under a NEW connection id, at the room default again…
   const g = s.addGuest('c2', { name: 'siddh', fp: 'SHA256:sid', role: 'prompter' });
-  assert.equal(g.role, 'driver', 'the prior role is restored, not the default');
-  assert.equal(s.roleOf('c2'), 'driver');
+  assert.equal(g.role, 'prompter', 'the prior role is restored, not the default');
+  assert.equal(s.roleOf('c2'), 'prompter');
 });
 
 test('a fresh fingerprint gets the explicit/default role, not a stranger’s seat', () => {
   const s = new RoomState({ defaultRole: 'viewer' });
   s.addGuest('c1', { name: 'sid', fp: 'SHA256:sid' });
-  s.setRole('c1', 'driver');
+  s.setRole('c1', 'prompter');
   s.removeGuest('c1');
   const other = s.addGuest('c2', { name: 'mallory', fp: 'SHA256:mallory' });
-  assert.equal(other.role, 'viewer', 'a different key is not handed the departed driver’s role');
+  assert.equal(other.role, 'viewer', 'a different key is not handed the departed prompter’s role');
 });
 
 test('a keyless guest is never remembered — reconnect is a new session-only seat', () => {
   const s = new RoomState({ defaultRole: 'prompter' });
   const g1 = s.addGuest('c1', { name: 'anon', fp: null });
-  s.setRole('c1', 'driver');
+  s.setRole('c1', 'prompter');
   s.removeGuest('c1');
   const g2 = s.addGuest('c2', { name: 'anon', fp: null, role: 'prompter' });
   assert.equal(g2.role, 'prompter', 'keyless rejoin starts fresh (no role restore)');
@@ -95,10 +94,10 @@ test('a keyless guest is never remembered — reconnect is a new session-only se
 test('the latest role held wins when a key reconnects more than once', () => {
   const s = new RoomState({ defaultRole: 'prompter' });
   s.addGuest('c1', { name: 'sid', fp: 'SHA256:sid' });
-  s.setRole('c1', 'driver');
+  s.setRole('c1', 'prompter');
   s.removeGuest('c1');
   const g2 = s.addGuest('c2', { name: 'sid', fp: 'SHA256:sid', role: 'prompter' });
-  assert.equal(g2.role, 'driver');
+  assert.equal(g2.role, 'prompter');
   s.setRole('c2', 'viewer'); // demoted, then drops again
   s.removeGuest('c2');
   const g3 = s.addGuest('c3', { name: 'sid', fp: 'SHA256:sid', role: 'prompter' });

@@ -18,16 +18,16 @@ test('COMMAND_NAMES lists exactly the claude-share commands', () => {
 });
 
 test('parse /role reads the @mention and target role', () => {
-  assert.deepEqual(parse('/role @siddh driver'), { name: 'role', mention: 'siddh', role: 'driver' });
+  assert.deepEqual(parse('/role @siddh prompter'), { name: 'role', mention: 'siddh', role: 'prompter' });
   assert.deepEqual(parse('/role @james viewer'), { name: 'role', mention: 'james', role: 'viewer' });
   // bare name (no @) is tolerated; role is case-insensitive
   assert.deepEqual(parse('/role siddh PROMPTER'), { name: 'role', mention: 'siddh', role: 'prompter' });
 });
 
 test('parse /role reports a usage error on a bad or missing role', () => {
-  assert.equal(parse('/role @siddh king').error, 'usage: /role @name driver|prompter|viewer');
-  assert.equal(parse('/role @siddh host').error, 'usage: /role @name driver|prompter|viewer', 'cannot set host via /role');
-  assert.equal(parse('/role @siddh').error, 'usage: /role @name driver|prompter|viewer');
+  assert.equal(parse('/role @siddh king').error, 'usage: /role @name prompter|viewer');
+  assert.equal(parse('/role @siddh host').error, 'usage: /role @name prompter|viewer', 'cannot set host via /role');
+  assert.equal(parse('/role @siddh').error, 'usage: /role @name prompter|viewer');
   assert.ok(parse('/role').error);
 });
 
@@ -72,7 +72,7 @@ test('recap and queue are prompter and up', () => {
   for (const cmd of ['recap', 'queue']) {
     assert.equal(permitted(cmd, 'viewer'), false, cmd);
     assert.equal(permitted(cmd, 'prompter'), true, cmd);
-    assert.equal(permitted(cmd, 'driver'), true, cmd);
+    assert.equal(permitted(cmd, 'prompter'), true, cmd);
     assert.equal(permitted(cmd, 'host'), true, cmd);
   }
 });
@@ -81,7 +81,7 @@ test('role/kick/pause/resume/end are host only', () => {
   for (const cmd of ['role', 'kick', 'pause', 'resume', 'end']) {
     assert.equal(permitted(cmd, 'viewer'), false, cmd);
     assert.equal(permitted(cmd, 'prompter'), false, cmd);
-    assert.equal(permitted(cmd, 'driver'), false, `${cmd} is not a driver power`);
+    assert.equal(permitted(cmd, 'prompter'), false, `${cmd} is not a prompter power`);
     assert.equal(permitted(cmd, 'host'), true, cmd);
   }
 });

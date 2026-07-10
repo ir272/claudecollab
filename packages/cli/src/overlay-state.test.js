@@ -172,15 +172,15 @@ test('overlay-state: host emits state; ui admit / pointer / ui command (gated) r
   assert.deepEqual(sPtr.data.pointers.k1, { x: 0.5, y: 0.25, name: 'sid', color: sid.color });
 
   // ── a {t:'ui'} command runs AS its sender: the host's /role lands ───────────
-  relay.send({ t: TYPES.UI, id: 'host', action: { kind: 'command', text: '/role @sid driver' } });
-  await relay.waitFor((m) => m.t === TYPES.STATE && findParticipant(m, 'k1')?.role === 'driver');
+  relay.send({ t: TYPES.UI, id: 'host', action: { kind: 'command', text: '/role @sid viewer' } });
+  await relay.waitFor((m) => m.t === TYPES.STATE && findParticipant(m, 'k1')?.role === 'viewer');
 
   // ── …and the role gate still applies: the guest's own /role is refused ──────
-  // A driver cannot run /role (host-only). The host answers the sender with a `to`
-  // (the "you can't run /role" notice), and the role must stay driver.
-  relay.send({ t: TYPES.UI, id: 'k1', action: { kind: 'command', text: '/role @sid viewer' } });
+  // A guest cannot run /role (host-only). The host answers the sender with a
+  // notice, and the role must stay viewer.
+  relay.send({ t: TYPES.UI, id: 'k1', action: { kind: 'command', text: '/role @sid prompter' } });
   await relay.waitFor((m) => m.t === TYPES.TO && m.id === 'k1');
-  assert.equal(findParticipant(relay.latestState(), 'k1').role, 'driver', 'the gated /role did not take effect');
+  assert.equal(findParticipant(relay.latestState(), 'k1').role, 'viewer', 'the gated /role did not take effect');
 
   assert.equal(stderr.trim(), '', `CLI emitted no errors:\n${stderr}`);
 });

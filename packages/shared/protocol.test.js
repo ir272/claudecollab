@@ -43,7 +43,7 @@ test('encode/decode round-trip for every message type', () => {
     },
     { t: 'pointer', x: 0.5, y: 0.5 }, // guest→relay form (no id yet)
     { t: 'pointer', id: 'g1', x: 0.1, y: 0.9 }, // relay→host form (labeled by sender)
-    { t: 'ui', action: { kind: 'command', text: '/role @siddh driver' } },
+    { t: 'ui', action: { kind: 'command', text: '/role @siddh prompter' } },
     { t: 'ui', id: 'g1', action: { kind: 'admit', id: 'k1' } },
     { t: 'ui', id: 'g1', action: { kind: 'deny', id: 'k1' } },
   ];
@@ -138,9 +138,9 @@ test('validate accepts well-formed messages', () => {
     { t: 'ui', action: { kind: 'admit', id: 'k1' } },
     { t: 'ui', action: { kind: 'deny', id: 'k1' } },
     { t: 'ui', action: { kind: 'command', text: '/pause' } },
-    { t: 'ui', id: 'g1', action: { kind: 'command', text: '/role @x driver' } },
+    { t: 'ui', id: 'g1', action: { kind: 'command', text: '/role @x prompter' } },
     // roster actions target a participant id (not a @-mention) so duplicate names can't mis-target
-    { t: 'ui', id: 'host', action: { kind: 'role', id: 'g2', role: 'driver' } },
+    { t: 'ui', id: 'host', action: { kind: 'role', id: 'g2', role: 'prompter' } },
     { t: 'ui', id: 'host', action: { kind: 'kick', id: 'g2' } },
   ];
   for (const m of good) assert.equal(validate(m), true, JSON.stringify(m));
@@ -189,7 +189,7 @@ test('validate rejects malformed messages', () => {
     { t: 'ui', action: { kind: 'kick' } }, // kick needs a target id
     { t: 'ui', action: { kind: 'kick', id: 7 } }, // target id must be a string
     { t: 'ui', action: { kind: 'role', id: 'g2' } }, // role is missing
-    { t: 'ui', action: { kind: 'role', role: 'driver' } }, // target id is missing
+    { t: 'ui', action: { kind: 'role', role: 'prompter' } }, // target id is missing
     { t: 'ui', action: { kind: 'role', id: 'g2', role: 7 } }, // role must be a string
   ];
   for (const m of bad) assert.equal(validate(m), false, JSON.stringify(m));

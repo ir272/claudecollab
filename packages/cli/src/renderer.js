@@ -22,11 +22,10 @@ const RESET = '\x1b[0m';
 const ORANGE = '\x1b[38;5;214m'; // status line (matches spike band)
 const posLine = (row) => `\x1b[${row};1H`; // move to column 1 of `row`
 
-// Role → status-line glyph (spec §roles: viewer 👁, prompter ✎, driver ⚑, host ★).
+// Role → status-line glyph (spec §roles: viewer 👁, prompter ✎, host ★).
 // Still exported for the join context card (brain/card.js) and event toasts.
 export const ROLE_GLYPH = Object.freeze({
   host: '★',
-  driver: '⚑',
   prompter: '✎',
   viewer: '👁',
 });

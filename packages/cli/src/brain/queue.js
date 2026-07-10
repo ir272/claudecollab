@@ -4,7 +4,7 @@
 // to the PTY.
 //
 // Permissions (spec): the author may edit or delete their own item; the host and
-// drivers may delete anyone's. Draining is fail-closed — it only releases an item
+// the host may delete anyone's. Draining is fail-closed — it only releases an item
 // when Claude is *known* idle; any other (or unknown) state keeps the queue frozen
 // so a missed hook can never auto-fire a stranger's prompt.
 
@@ -36,7 +36,7 @@ export class Queue {
   }
 
   /**
-   * Edit a queued item's text. Author-only (spec): a driver/host can DELETE any
+   * Edit a queued item's text. Author-only (spec): the host can DELETE any
    * item but may not rewrite what someone else meant to say.
    * @returns {boolean} true if edited
    */
@@ -48,14 +48,14 @@ export class Queue {
   }
 
   /**
-   * Delete a queued item. Allowed for the author, or for a driver/host on any item.
+   * Delete a queued item. Allowed for the author, or for the host on any item.
    * @returns {boolean} true if removed
    */
   remove(id, byUserId, byRole) {
     const idx = this.#items.findIndex((i) => i.id === id);
     if (idx === -1) return false;
     const it = this.#items[idx];
-    if (it.author !== byUserId && !atLeast(byRole, 'driver')) return false;
+    if (it.author !== byUserId && !atLeast(byRole, 'host')) return false;
     this.#items.splice(idx, 1);
     return true;
   }
