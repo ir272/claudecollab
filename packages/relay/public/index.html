@@ -47,6 +47,8 @@
         <span id="sb-role" class="my-role"></span>
         <span id="claude-chip" class="chip claude idle">idle</span>
         <span class="top-spacer"></span>
+        <!-- addressed notices ("you can't …") live HERE, never over the terminal -->
+        <button id="toast" class="notice-chip" type="button" title="dismiss" hidden></button>
         <span id="knocks" class="knocks"></span>
         <button id="queue-chip" class="ctrl qchip" type="button" title="Prompts waiting for Claude" hidden></button>
         <button id="new-draft" class="ctrl" type="button" title="Start a draft (or double-click the terminal)">+ draft</button>
@@ -65,8 +67,6 @@
 
       <!-- avatar click → role/kick popover (host) or identity card (guest) -->
       <div id="popover" class="popover" hidden></div>
-      <!-- addressed notices from the brain ("you can't … — ask the host") -->
-      <div id="toast" class="toast" role="status" hidden></div>
 
       <div id="dc-banner" class="dc-banner" hidden>
         <span>Disconnected from the room.</span>

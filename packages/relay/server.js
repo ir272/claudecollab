@@ -259,7 +259,10 @@ export function startRelay(opts = {}) {
           clearTimeout(rec.knockTimer);
           room.pending.delete(rec.id);
           room.guests.delete(rec.id);
-          safeWrite(rec.stream, COPY.denied);
+          // A web rec needs a machine-readable reason — terminal copy would land as
+          // mirror bytes and the silent close then read as "host offline" (wrong).
+          if (rec.kind === 'web' && rec.sendText) rec.sendText(JSON.stringify({ t: 'error', reason: 'denied' }));
+          else safeWrite(rec.stream, COPY.denied);
           endGuest(rec);
           return;
         }

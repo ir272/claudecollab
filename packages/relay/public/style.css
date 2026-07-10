@@ -438,25 +438,26 @@ body {
   justify-content: center;
 }
 
-/* addressed notice from the brain — amber "needs your attention" language */
-.toast {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 50;
-  max-width: min(80vw, 560px);
-  padding: 8px 16px;
-  border-radius: 999px;
+/* addressed notice, in the header strip — amber "needs your attention" language,
+   deliberately never overlapping the terminal or the drafts */
+.notice-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--amber-hi);
-  background: rgba(16, 18, 27, 0.92);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  box-shadow: 0 0 0 1px rgba(232, 163, 61, 0.45), 0 0 16px rgba(232, 163, 61, 0.18),
-    0 18px 44px rgba(0, 0, 0, 0.6);
+  background: rgba(232, 163, 61, 0.08);
+  border: none;
+  border-radius: 999px;
+  padding: 4px 12px;
+  box-shadow: 0 0 0 1px rgba(232, 163, 61, 0.45), 0 0 16px rgba(232, 163, 61, 0.18);
+  cursor: pointer;
   animation: knock-in 0.3s var(--spring);
 }
 

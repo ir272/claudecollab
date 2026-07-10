@@ -447,6 +447,9 @@ function main() {
   const sbRole = $('#sb-role');
   const toastEl = $('#toast');
   const directBtn = $('#direct-btn');
+  toastEl.addEventListener('click', () => {
+    toastEl.hidden = true;
+  });
 
   // ── join screen ──────────────────────────────────────────────────────────────
   function showJoin() {
@@ -480,6 +483,8 @@ function main() {
     banned: 'You were removed from this room.',
     lockout: 'Too many attempts. Wait a bit and try again.',
     timeout: 'The host did not answer in time. Knock again when ready.',
+    denied: 'The host declined this knock.',
+    closed: 'The connection closed before you were let in — knock again.',
   };
 
   function beginKnock() {
@@ -517,7 +522,9 @@ function main() {
     ws.onclose = () => {
       if (intentionalClose) return;
       if (phase === 'live') showDisconnected();
-      else if (phase !== 'error') fail('host-gone');
+      // A silent close mid-knock is NOT evidence the host is offline (a superseded
+      // knock or a network blip closes the same way) — never claim that it is.
+      else if (phase !== 'error') fail('closed');
     };
     ws.onerror = () => {};
   }
@@ -630,8 +637,11 @@ function main() {
     ro.observe(stage);
     window.addEventListener('resize', fit);
     // Pointer capture over the terminal (the floating-cursor "Figma feel").
-    stage.addEventListener('mousemove', onStageMove);
-    stage.addEventListener('mouseleave', () => sendPointer(-1, -1)); // park off-canvas
+    // Pointer events, not mouse events: cancelling a pointerdown (the draft drag)
+    // suppresses the compatibility MOUSE stream, which froze cursor broadcasting
+    // for the whole drag. Pointermove keeps flowing regardless.
+    stage.addEventListener('pointermove', onStageMove);
+    stage.addEventListener('pointerleave', () => sendPointer(-1, -1)); // park off-canvas
   }
 
   // The tab's cell size, from the renderer's own measurement (what addon-fit reads),
@@ -647,15 +657,21 @@ function main() {
   }
 
   // Report this tab's CAPACITY (how many cells its container could show) — the brain
-  // folds it into the shared clamp. The mirror itself never sizes from the container:
-  // it renders at exactly state.view (see applyView) and scales down visually.
+  // folds it into the shared clamp. Always measured at the REFERENCE font (13px):
+  // scaleTerm retunes the actual font to fill the stage, and capacity tracking the
+  // live font would feed back into the clamp (bigger font → smaller clamp → bigger
+  // font …). The mirror itself never sizes from the container: it renders at
+  // exactly state.view (see applyView) and scales visually.
   function fit() {
     if (!term) return;
     const rect = stage.getBoundingClientRect();
     if (rect.width < 2 || rect.height < 2) return;
     const { cw, ch } = cellSize();
-    const cols = Math.max(2, Math.floor((rect.width - 24) / cw));
-    const rows = Math.max(1, Math.floor((rect.height - 20) / ch));
+    const font = term.options.fontSize || 13;
+    const refCw = (cw / font) * 13;
+    const refCh = (ch / font) * 13;
+    const cols = Math.max(2, Math.floor((rect.width - 24) / refCw));
+    const rows = Math.max(1, Math.floor((rect.height - 20) / refCh));
     sendMsg({ t: 'resize', cols, rows });
     scaleTerm();
   }
@@ -684,9 +700,10 @@ function main() {
     scaleTerm();
   }
 
-  // The mirror can be wider than this tab: scale it down to fit (never up). The
-  // transform keeps termEl's rect equal to the VISUAL content box, so pointer math
-  // and the cursor overlay read true positions from getBoundingClientRect().
+  // Make the mirror FILL the tab: pick the font size that best fits the shared
+  // cols×rows into the stage (crisp text beats transform-zoom), then a residual
+  // scale (≤ ~1) closes the remaining gap. termEl's rect stays equal to the VISUAL
+  // content box, so pointer math and the cursor overlay read true positions.
   function scaleTerm() {
     if (!term) return;
     // .xterm-screen is the true cols×rows content box (.xterm just fills its parent)
@@ -696,11 +713,21 @@ function main() {
     const h = inner.offsetHeight;
     if (w < 2 || h < 2) return;
     const rect = stage.getBoundingClientRect();
-    const k = Math.min((rect.width - 24) / w, (rect.height - 20) / h, 1);
+    const fit = Math.min((rect.width - 24) / w, (rect.height - 20) / h);
+    // Retarget the font while the ideal size is meaningfully away from current —
+    // the renderer re-measures async, so the next frame's residual scale settles it.
+    const cur = term.options.fontSize || 13;
+    const ideal = Math.max(9, Math.min(28, Math.floor(cur * fit)));
+    if (ideal !== cur && Math.abs(ideal - cur) >= 1 && Number.isFinite(fit) && fit > 0) {
+      term.options.fontSize = ideal;
+      requestAnimationFrame(scaleTerm);
+      return;
+    }
+    const k = Math.min(fit, 1);
     termEl.style.width = w + 'px';
     termEl.style.height = h + 'px';
     termEl.style.transform = `scale(${k})`;
-    // Center a mirror narrower than the tab, like a terminal window would sit.
+    // Center whatever gap remains, like a terminal window would sit.
     termEl.style.left = Math.max(12, (rect.width - w * k) / 2) + 'px';
   }
 

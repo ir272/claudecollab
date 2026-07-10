@@ -358,11 +358,11 @@ async function main() {
     notify(userId, 'no draft focused — hit + draft (or double-click the terminal) to compose');
   };
 
-  // A message meant for one participant: mail it to a guest (bytes for an ssh
-  // terminal, an addressed state.notice for browser tabs), and surface it in the
-  // host's band too so moderation stays visible.
+  // A message meant for one participant: an addressed state.notice (browser tabs
+  // render it as a header chip), surfaced in the host's band too so moderation
+  // stays visible. Never injected as raw bytes — Claude's TUI repaints over them
+  // on an ssh terminal and they smear ABOVE the band in a web mirror.
   const notify = (userId, msg) => {
-    if (userId && userId !== HOST_ID) relay?.sendTo(userId, `\r\n${msg}\r\n`);
     ui.notice = { id: userId, msg, seq: ++ui.noticeSeq };
     showToast(msg); // repaints the band, which also schedules a state emit
   };
