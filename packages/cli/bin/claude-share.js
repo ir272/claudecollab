@@ -22,7 +22,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
-import { paint, ROLE_GLYPH, draftBox, queueBlock, knockLine } from '../src/renderer.js';
+import { paint, ROLE_GLYPH, draftBox, queueBlock, knockLine, bandHeight } from '../src/renderer.js';
+import { ScreenSnapshot } from '../src/screen-snapshot.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
 import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js';
 import { createPartitioner } from '../src/term-chatter.js';
@@ -94,8 +95,13 @@ function loadHostKey() {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const { stdin, stdout } = process;
-  const bandRows = opts.bandRows;
+  // The band reserves AT LEAST this many rows and grows with content up to a cap
+  // (see bandHeight); --band-rows sets the floor. It is no longer a fixed reserve —
+  // the child PTY is resized each repaint so Claude's region matches the band.
+  const minBand = opts.bandRows;
   const multiplayer = opts.relay; // the composer/gate is active only when sharing
+  // The current live Claude screen, cached so a joiner sees it instantly (finding 1).
+  const snapshot = new ScreenSnapshot();
 
   // ── the brain ─────────────────────────────────────────────────────────────
   const state = new RoomState({
@@ -142,7 +148,7 @@ async function main() {
 
   let pty;
   try {
-    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows });
+    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: minBand });
   } catch (err) {
     process.stderr.write(
       `claude-share: could not start "${opts.cmd}": ${err.message}\n` +
@@ -184,21 +190,23 @@ async function main() {
     return lines;
   }
 
-  const bandState = (cols, rows) => ({
+  const bandState = (cols, rows, band, lines) => ({
     cols,
     rows,
-    bandRows,
+    bandRows: band,
     room: state.room,
     participants: state.list().map((p) => ({ name: p.name, role: p.role })),
     mode: state.mode,
-    lines: bandDynamicLines(cols),
+    lines,
   });
-  // The band is part of the ONE live screen (spec §how-a-session-works). Paint it
-  // for the host at its own terminal size, and mirror the same band to guests
-  // sized to the clamped shared view — so everyone, not just the host, sees the
-  // draft boxes/cursors, the attributed queue, the status line, knocks, and every
-  // event toast (joins/leaves/kicks/role changes, the mode-change warning banner,
-  // recap notices). Suppressed while paused: guests hold on the pause card.
+
+  // The coordinate space the band paints into. In a shared session it is the CLAMPED
+  // shared size (min of participants, floor 80×24), so every participant — the host
+  // included — sees the SAME layout anchored at the same rows (finding 3), and the
+  // one painted band can be written to the host and mirrored to guests unchanged.
+  // Solo there is no shared view, so we use the host's own terminal.
+  const viewSize = () => (multiplayer ? state.clamp() : { cols: stdout.columns || 80, rows: stdout.rows || 24 });
+
   // Send a shared-view frame to the guests who should see it. When everyone is at or
   // above the 80×24 floor this is a single broadcast; when at least one guest is below
   // the floor we deliver per-guest to the eligible ones only, so a below-floor guest
@@ -210,12 +218,39 @@ async function main() {
     else for (const id of state.mirrorTargets()) relay.sendTo(id, data);
   };
 
+  // The child PTY size we last applied. The band height is dynamic, so we resize
+  // Claude's region whenever the band or the shared width changes (each resize costs
+  // Claude a repaint, so only on an actual change).
+  let appliedCols = null;
+  let appliedChildRows = null;
+
+  // The band is part of the ONE live screen (spec §how-a-session-works): the same
+  // painted band goes to the host's stdout and, mirrored, to every eligible guest —
+  // so everyone sees the draft boxes/cursors, the attributed queue, the status line,
+  // knocks, and every event toast (joins/leaves/kicks, the mode-change warning, recap
+  // notices). Its height is computed from content each repaint and Claude's region is
+  // resized to match, so the band can never overflow past the bottom (finding 2).
   const repaintBand = () => {
-    if (stdout.isTTY) stdout.write(paint(bandState(stdout.columns || 80, stdout.rows || 24)));
-    if (relay && multiplayer && !state.paused) {
-      const { cols, rows } = state.clamp();
-      mirror(paint(bandState(cols, rows)));
+    const { cols, rows } = viewSize();
+    const dyn = bandDynamicLines(cols);
+    // status line + dynamic lines → the reserved height (capped; overflow becomes
+    // a "+N more" line inside paint()).
+    const band = bandHeight(1 + dyn.length, rows, { min: minBand });
+
+    // Keep Claude's region to exactly the rows the band does not occupy, at the
+    // shared width — resize the child only when that actually changes.
+    const childRows = Math.max(1, rows - band);
+    if (cols !== appliedCols || childRows !== appliedChildRows) {
+      appliedCols = cols;
+      appliedChildRows = childRows;
+      try {
+        pty.resizeChild(cols, childRows);
+      } catch {}
     }
+
+    const painted = paint(bandState(cols, rows, band, dyn));
+    if (stdout.isTTY) stdout.write(painted);
+    if (relay && multiplayer && !state.paused) mirror(painted);
   };
 
   const showToast = (msg, ms = 4000) => {
@@ -248,12 +283,9 @@ async function main() {
   };
 
   // ── size clamp (spec §renderer) ────────────────────────────────────────────
-  const recomputeClamp = () => {
-    const { cols, rows } = state.clamp();
-    try {
-      pty.resize(cols, rows); // pty.resize subtracts bandRows for the child
-    } catch {}
-  };
+  // The shared size changed (a join/leave/kick/resize): repaint, which recomputes
+  // the clamp, the band height, and Claude's region size in one place.
+  const recomputeClamp = () => repaintBand();
 
   // ── queue drain (fail closed, one per idle) ─────────────────────────────────
   const pump = () => {
@@ -334,12 +366,17 @@ async function main() {
         showToast(msg);
         break;
       }
-      case 'pause':
+      case 'pause': {
         state.setPaused(true);
-        relay?.sendScreen('\x1b[2J\x1b[H  ⏸ sharing paused — the host will resume shortly\r\n');
+        // Route the hold card through mirrorTargets() like everything else, so a
+        // below-floor spectator (already parked on the "make your terminal bigger"
+        // hint) is not clobbered with it (finding 5).
+        const hold = '\x1b[2J\x1b[H  ⏸ sharing paused — the host will resume shortly\r\n';
+        for (const id of state.mirrorTargets()) relay?.sendTo(id, hold);
         log.event(`${by} paused sharing`);
         showToast('sharing paused — guests see a hold card');
         break;
+      }
       case 'resume':
         state.setPaused(false);
         log.event(`${by} resumed sharing`);
@@ -546,6 +583,14 @@ async function main() {
         const card = buildCard(state, log, { joinerId: id, claudeState: claude.state });
         r.sendTo(id, card.replace(/\n/g, '\r\n') + '\r\n');
       } catch {}
+      // Right after the card, replay the CURRENT Claude screen so the joiner sees
+      // the live screen immediately — not blank space until the next frame. The
+      // mirror only forwards frames produced after this join, so without the
+      // snapshot a guest admitted while Claude is idle would see nothing (finding 1).
+      try {
+        const snap = snapshot.get();
+        if (snap) r.sendTo(id, snap);
+      } catch {}
       showToast(`${g.name} joined as ${g.role} ${ROLE_GLYPH[g.role] ?? ''}`);
       recomputeClamp();
     });
@@ -699,6 +744,7 @@ async function main() {
   // Write every Claude frame locally; mirror it to guests unless paused. The band
   // redraws on the frame boundary so it never smears mid-repaint.
   pty.onFrame((chunk) => {
+    snapshot.push(chunk); // retain the current screen so a joiner sees it live (finding 1)
     stdout.write(chunk);
     mirror(chunk);
     repaintBand();
