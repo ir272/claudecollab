@@ -110,6 +110,37 @@ test('statusLine never exceeds the column budget (no wrap into Claude)', () => {
   }
 });
 
+test('statusLine keeps the room URL whole on common widths, trimming other slots (finding 3)', () => {
+  // The live repro: at 100 cols the old whole-line clamp cut the URL to "…8787/humble-s".
+  // A realistic host-tab URL must now survive intact at both 100 and the 80-col floor.
+  const url = 'http://127.0.0.1:8787/humble-shark?host=deadbeefdeadbeef';
+  for (const cols of [80, 100, 120]) {
+    const line = statusLine(
+      { room: 'humble-shark', people: 3, claudeState: '✻ brewing…', url },
+      cols,
+    );
+    const plain = stripAnsi(line);
+    assert.ok(plain.includes(url), `cols=${cols}: the full URL survives, got ${JSON.stringify(plain)}`);
+    assert.ok(stringWidth(line) <= cols, `cols=${cols}: still never wraps into Claude`);
+  }
+});
+
+test('statusLine drops lower-priority slots before touching the URL (finding 3)', () => {
+  // Narrow enough that not everything fits: the URL and room survive; people/claude go.
+  const url = 'http://127.0.0.1:8787/humble-shark?host=deadbeefdeadbeef';
+  const line = statusLine({ room: 'humble-shark', people: 3, claudeState: '✻ brewing…', url }, 74);
+  const plain = stripAnsi(line);
+  assert.ok(plain.includes(url), 'the URL is never sacrificed to fit the other slots');
+  assert.ok(stringWidth(line) <= 74);
+});
+
+test('statusLine only trims the URL itself on an absurdly narrow terminal', () => {
+  // Below the URL's own width there is no other option than to trim it — the
+  // never-wrap-into-Claude invariant wins, but this is far below the 80-col floor.
+  const line = statusLine({ room: 'r', url: 'http://127.0.0.1:8787/humble-shark?host=deadbeef' }, 20);
+  assert.ok(stringWidth(line) <= 20, 'the band still never exceeds the width');
+});
+
 test('statusLine is colored orange and reset', () => {
   const line = statusLine({ room: 'r', people: 1, claudeState: 'live' }, 80);
   assert.ok(line.startsWith(ORANGE), 'opens with the orange SGR');

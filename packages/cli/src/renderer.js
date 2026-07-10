@@ -110,12 +110,25 @@ export function truncateToWidth(str, max) {
 
 const color = (sgr, plain, width) => (width <= 0 ? '' : sgr + truncateToWidth(plain, width) + RESET);
 
+const SEP = ' · ';
+const FRAME_L = '─ ';
+const FRAME_R = ' ─';
+
 /**
  * The one and only band line: `─ <room> · <n> people · <claude-state> · <room URL> ─`.
  * Missing pieces are simply dropped (no room URL when solo, no count when unknown);
  * the whole line is width-clamped so it can never wrap into Claude's rows. Transient
  * messages (toasts, pause, event notices) are folded into the claude-state slot by
  * the caller — the band is one line and never grows.
+ *
+ * The URL is load-bearing: on the host's terminal it is the ONLY place the host-tab
+ * URL (with its token) is shown, and clipboard copy is best-effort/optional. Clamping
+ * the whole line truncated the URL — the last slot — into uselessness on common widths
+ * (100 cols cut it to "…8787/humble-s"; the 80-col floor left almost nothing). So the
+ * URL is packed FIRST at full width and never truncated; room, people and claude-state
+ * then fill what remains (that priority), the last one trimmed and the rest dropped —
+ * the URL always survives the clamp. Only an absurdly narrow terminal (< URL width)
+ * trims the URL, where the never-wrap-into-Claude invariant has to win.
  *
  * @param {object} state
  * @param {string|null} [state.room]        room code (null ⇒ "claude-share")
@@ -127,12 +140,49 @@ const color = (sgr, plain, width) => (width <= 0 ? '' : sgr + truncateToWidth(pl
  */
 export function statusLine(state = {}, width = 80) {
   const room = state.room || 'claude-share';
-  const parts = [room];
+  const url = state.url ? String(state.url) : null;
   const n = state.people;
-  if (Number.isFinite(n)) parts.push(`${n} ${n === 1 ? 'person' : 'people'}`);
-  if (state.claudeState) parts.push(String(state.claudeState));
-  if (state.url) parts.push(String(state.url));
-  return color(ORANGE, `─ ${parts.join(' · ')} ─`, width);
+  const people = Number.isFinite(n) ? `${n} ${n === 1 ? 'person' : 'people'}` : null;
+  const claudeState = state.claudeState ? String(state.claudeState) : null;
+
+  const sepW = stringWidth(SEP);
+  const inner = width - stringWidth(FRAME_L) - stringWidth(FRAME_R);
+  if (inner <= 0) return color(ORANGE, truncateToWidth(`${FRAME_L}${room}`, width), width);
+
+  // Reading order for display vs keep-priority for the clamp (URL highest).
+  const display = [
+    { key: 'room', text: room },
+    { key: 'people', text: people },
+    { key: 'claude', text: claudeState },
+    { key: 'url', text: url },
+  ].filter((s) => s.text != null);
+  const priority = ['url', 'room', 'people', 'claude'];
+
+  const chosen = new Map(); // key -> text (whole, or truncated for the last that fits)
+  let used = 0; // inner columns consumed
+  for (const key of priority) {
+    const slot = display.find((s) => s.key === key);
+    if (!slot) continue;
+    const sep = chosen.size > 0 ? sepW : 0;
+    const w = stringWidth(slot.text);
+    if (used + sep + w <= inner) {
+      chosen.set(key, slot.text);
+      used += sep + w;
+      continue;
+    }
+    // Doesn't fit whole. The URL is kept even here (truncated only if it can't fit
+    // alone); every other slot is trimmed into what's left, then packing stops.
+    if (key === 'url') {
+      chosen.set(key, truncateToWidth(slot.text, inner - used - sep));
+    } else {
+      const budget = inner - used - sep;
+      if (budget >= 1) chosen.set(key, truncateToWidth(slot.text, budget));
+    }
+    break;
+  }
+
+  const parts = display.filter((s) => chosen.has(s.key)).map((s) => chosen.get(s.key));
+  return color(ORANGE, `${FRAME_L}${parts.join(SEP)}${FRAME_R}`, width);
 }
 
 /**
