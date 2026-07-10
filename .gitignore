@@ -4,3 +4,4 @@ spike/spike_host_key*
 spike/*.log
 .DS_Store
 *.tsbuildinfo
+.playwright-mcp/
