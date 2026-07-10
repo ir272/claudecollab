@@ -167,13 +167,24 @@ export class Drafts {
   /** Renderer-facing serialisation: plain objects only, no Map/Set. */
   snapshot() {
     return {
-      boxes: this.boxes.map((b) => ({
-        id: b.id,
-        text: displayText(b),
-        expanded: expandedText(b),
-        cursors: Object.fromEntries(b.cursors),
-        authors: [...b.authors],
-      })),
+      boxes: this.boxes.map((b) => {
+        // caretOffsets: each cursor's position as a character offset into the
+        // display `text` (paste tokens counted at their collapsed width), so the
+        // renderer can place a live caret block without re-deriving atom widths.
+        // `cursors` keeps the raw atom index (mention logic / tests depend on it).
+        const caretOffsets = {};
+        for (const [uid, pos] of b.cursors) {
+          caretOffsets[uid] = b.atoms.slice(0, pos).map(atomDisplay).join('').length;
+        }
+        return {
+          id: b.id,
+          text: displayText(b),
+          expanded: expandedText(b),
+          cursors: Object.fromEntries(b.cursors),
+          caretOffsets,
+          authors: [...b.authors],
+        };
+      }),
     };
   }
 

@@ -191,6 +191,57 @@ test('an unfocused draftBox omits the send hint', () => {
   assert.match(top, /james/);
 });
 
+// ── live cursors (the wow beat, spec §draft lines) ──────────────────────────────
+
+test('draftBox renders a caret block + name tag for each participant cursor', () => {
+  const lines = draftBox(
+    {
+      text: 'make the hero full-bleed',
+      authors: ['ian', 'siddh'],
+      cursors: [
+        { name: 'ian', offset: 24 },
+        { name: 'siddh', offset: 24 },
+      ],
+    },
+    { cols: 60, focused: true },
+  );
+  assert.match(lines[1], /▊ian/, "ian's caret is tagged");
+  assert.match(lines[1], /▊siddh/, "siddh's caret is tagged");
+  assert.match(lines[1], /full-bleed▊/, 'carets sit after the text (both at the end)');
+  for (const l of lines) assert.ok(stringWidth(l) <= 60, `width ${stringWidth(l)} > 60`);
+});
+
+test('a caret lands at its offset inside the text', () => {
+  const [, body] = draftBox(
+    { text: 'abcdef', authors: ['ian'], cursors: [{ name: 'jo', offset: 3 }] },
+    { cols: 40 },
+  );
+  assert.match(body, /abc▊jodef/, 'caret+name inserted between "abc" and "def"');
+});
+
+test('draftBox without cursors renders no caret (backward compatible)', () => {
+  const [, body] = draftBox({ text: 'plain draft', authors: ['ian'] }, { cols: 40 });
+  assert.doesNotMatch(body, /▊/);
+  assert.match(body, /plain draft/);
+});
+
+test('cursor carets never push a draft box past its width', () => {
+  for (const cols of [16, 24, 40]) {
+    const lines = draftBox(
+      {
+        text: 'x'.repeat(60),
+        authors: ['ian', 'jo'],
+        cursors: [
+          { name: 'ian', offset: 60 },
+          { name: 'jo', offset: 10 },
+        ],
+      },
+      { cols },
+    );
+    for (const l of lines) assert.ok(stringWidth(l) <= cols, `cols=${cols}: width ${stringWidth(l)}`);
+  }
+});
+
 test('draftBox truncates overlong text to its inner width', () => {
   const lines = draftBox({ text: 'x'.repeat(200), authors: ['ian'] }, { cols: 30, focused: false });
   for (const l of lines) assert.ok(stringWidth(l) <= 30);

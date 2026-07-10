@@ -167,7 +167,9 @@ async function main() {
       const hostBoxId = drafts.activeBox(HOST_ID)?.id;
       for (const b of drafts.snapshot().boxes) {
         const authors = b.authors.map(nameOf);
-        lines.push(...draftBox({ text: b.text, authors }, { cols, focused: b.id === hostBoxId }));
+        // Each participant's live cursor, tagged by display name — the wow beat.
+        const cursors = Object.entries(b.caretOffsets).map(([uid, offset]) => ({ name: nameOf(uid), offset }));
+        lines.push(...draftBox({ text: b.text, authors, cursors }, { cols, focused: b.id === hostBoxId }));
       }
       const qitems = queue.items.map((it) => ({ author: nameOf(it.author), text: it.text }));
       lines.push(...queueBlock(qitems, { cols }));

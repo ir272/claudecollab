@@ -139,14 +139,44 @@ function padTo(str, width) {
   return t + ' '.repeat(Math.max(0, width - stringWidth(t)));
 }
 
+// A live cursor block (spec draft-lines frame: `make the hero full-bleed▊▊`).
+const CARET = '▊';
+
+/**
+ * Overlay every participant's live cursor into the draft body: a caret block at the
+ * cursor's offset, tagged with the owner's name so a cursor is identifiable without
+ * relying on color (spec: "name tags carry identity; color is a bonus"). This is the
+ * wow beat — two named cursors writing one prompt together.
+ *
+ * Carets are inserted at their display-text offsets right-to-left (so earlier offsets
+ * stay valid), then embedded newlines collapse to the single-line ⏎ form. Everything
+ * stays plain text (no ANSI) so the caller's width clamp measures it correctly.
+ *
+ * @param {string} text                    the draft's collapsed display text
+ * @param {{name?:string, offset:number}[]} cursors
+ * @returns {string}
+ */
+function withCarets(text, cursors) {
+  let s = String(text ?? '');
+  const marks = (cursors ?? [])
+    .filter((c) => c && Number.isInteger(c.offset))
+    .sort((a, b) => b.offset - a.offset);
+  for (const c of marks) {
+    const at = Math.max(0, Math.min(s.length, c.offset));
+    s = s.slice(0, at) + CARET + (c.name ?? '') + s.slice(at);
+  }
+  return s.replace(/\n/g, ' ⏎ ');
+}
+
 /**
  * Render one draft as its own author-tagged box (spec §draft lines: "each draft
  * renders as its own visually separated, author-tagged box — never as stacked bare
  * lines"). Exactly three rows; the focused box carries the `↵ sends this draft`
- * hint. Content is single-line (embedded newlines collapse to ⏎) and truncated to
- * the inner width so it can never wrap into Claude's rows.
+ * hint. Content is single-line (embedded newlines collapse to ⏎), carries each
+ * participant's live cursor, and is truncated to the inner width so it can never
+ * wrap into Claude's rows.
  *
- * @param {{text:string, authors:string[]}} box
+ * @param {{text:string, authors:string[], cursors?:{name?:string,offset:number}[]}} box
  * @param {{cols:number, focused?:boolean}} opts
  * @returns {[string,string,string]}
  */
@@ -159,7 +189,7 @@ export function draftBox(box, { cols = 80, focused = false } = {}) {
   const mid = Math.max(0, W - stringWidth(left) - stringWidth(right));
   const top = truncateToWidth(left + '─'.repeat(mid) + right, W);
 
-  const oneLine = String(box.text ?? '').replace(/\n/g, ' ⏎ ');
+  const oneLine = withCarets(box.text, box.cursors);
   const body = `│ ${padTo(oneLine, W - 4)} │`;
   const bottom = `╰${'─'.repeat(W - 2)}╯`;
   return [top, body, bottom];

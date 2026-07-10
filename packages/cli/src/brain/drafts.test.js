@@ -555,6 +555,29 @@ test('snapshot serialises boxes with text, expanded text, cursors, and authors',
   assert.deepEqual(b.authors, ['ian']);
 });
 
+test('snapshot exposes caretOffsets as display-text offsets (paste-aware)', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'q: '); // 3 char atoms
+  d.keystroke('ian', paste('x\ny')); // one paste atom → cursor at atom index 4
+  const b = d.snapshot().boxes[0];
+  assert.deepEqual(b.cursors, { ian: 4 }, 'raw atom index preserved');
+  assert.equal(b.text, 'q: [pasted 2 lines]');
+  // …but the caret offset is the DISPLAY position (end of the collapsed token),
+  // not the atom index — what the renderer needs to place the block.
+  assert.equal(b.caretOffsets.ian, b.text.length);
+});
+
+test('caretOffsets tracks each co-editor cursor independently', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'hello'); // ian at 5
+  const id = d.activeBox('ian').id;
+  d.focus('james', id); // james at 5
+  for (let i = 0; i < 5; i++) d.keystroke('james', LEFT); // james to 0
+  const b = d.snapshot().boxes[0];
+  assert.equal(b.caretOffsets.ian, 5);
+  assert.equal(b.caretOffsets.james, 0);
+});
+
 test('Buffer input is accepted, not just strings', () => {
   const d = new Drafts();
   d.keystroke('ian', Buffer.from('hi', 'utf8'));
