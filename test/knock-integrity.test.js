@@ -274,3 +274,55 @@ test('a knock the host never admits gets NO screen bytes, even while the host pa
   assert.equal(g.joined, false, 'the un-admitted guest never received a joined signal');
   assert.equal(g.binCount, 0, 'the un-admitted guest never received a single screen byte');
 });
+
+test('an admitted guest reloads straight back in; a kicked one stays out', { timeout: 180000 }, async (t) => {
+  const { webPort, code, token } = await bootHost(t);
+  const hostTab = await connectHostTab(webPort, { code, token });
+  t.after(() => hostTab.close());
+  await hostTab.onJoined();
+  await hostTab.waitForState((s) => s.room === code);
+
+  const waitJoined = async (g, what, ms = 10000) => {
+    const t0 = Date.now();
+    while (!g.joined) {
+      if (Date.now() - t0 > ms) throw new Error(`${what}: never joined`);
+      await delay(100);
+    }
+  };
+
+  // First visit: the normal knock → explicit admit.
+  const g1 = await connectWebGuest(webPort, { code, name: 'rex', token: 'tok-rex' });
+  t.after(() => g1.close());
+  const s1 = await hostTab.waitForState((s) => s.knocks.some((k) => k.fp === 'web:tok-rex'));
+  hostTab.admit(s1.knocks.find((k) => k.fp === 'web:tok-rex').id);
+  await waitJoined(g1, 'first visit');
+
+  // Reload: the same browser token reconnects — NO second admit, straight in.
+  g1.close();
+  await g1.onClose();
+  const g2 = await connectWebGuest(webPort, { code, name: 'rex', token: 'tok-rex' });
+  t.after(() => g2.close());
+  await waitJoined(g2, 'reload (auto-readmit)');
+  const sNow = hostTab.latest();
+  assert.ok(!sNow.knocks?.some((k) => k.fp === 'web:tok-rex'), 'the reload never parked as a pending knock');
+
+  // Kick: the live web guest gets a machine-readable reason (the removed panel),
+  // then the connection closes.
+  const reasons = [];
+  g2.ws.on('message', (buf, isBinary) => {
+    if (isBinary) return;
+    try {
+      const m = JSON.parse(buf.toString('utf8'));
+      if (m.t === 'error') reasons.push(m.reason);
+    } catch {}
+  });
+  hostTab.command('/kick @rex');
+  await g2.onClose();
+  assert.deepEqual(reasons, ['kicked'], 'the kicked web guest was told WHY before the close');
+
+  // The kicked token cannot ride auto-readmit back in (the kick banned the fp).
+  const g3 = await connectWebGuest(webPort, { code, name: 'rex', token: 'tok-rex' });
+  t.after(() => g3.close());
+  await g3.onClose();
+  assert.equal(g3.joined, false, 'a kicked fingerprint never auto-readmits');
+});

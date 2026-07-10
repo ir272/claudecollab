@@ -299,7 +299,10 @@ export function startRelay(opts = {}) {
           room.guests.delete(rec.id);
           room.pending.delete(rec.id);
           rec.gone = true; // host already knows; don't echo a LEFT back
-          safeWrite(rec.stream, COPY.kicked);
+          // A web rec needs a machine-readable reason (the client shows a removed
+          // panel and hides the mirror); terminal copy is for ssh guests only.
+          if (rec.kind === 'web' && rec.sendText) rec.sendText(JSON.stringify({ t: 'error', reason: 'kicked' }));
+          else safeWrite(rec.stream, COPY.kicked);
           endGuest(rec);
           return;
         }

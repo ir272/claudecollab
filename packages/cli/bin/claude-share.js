@@ -131,6 +131,10 @@ async function main() {
   // HOST_ID for input attribution and never counted as a second roster entry.
   const hostTabIds = new Set();
   const hostTabSizes = new Map(); // host-tab connection id -> {cols, rows} capacity
+  // Fingerprints admitted this session. A returning fp walks back in without a
+  // second admit (a reload shouldn't cost a knock); kicks remove the fp AND ban
+  // it at the relay, so a kicked guest can never ride this back in.
+  const admittedFps = new Set();
   const claude = { state: 'idle' };
   let armed = false; // true only while a permission ask is pending (hook-armed)
   let pendingKnocks = []; // FIFO of guest {id,name,fp,seen} awaiting the host tab's admit
@@ -545,6 +549,8 @@ async function main() {
   function applyKick(actorId, targetId) {
     if (!targetId || targetId === HOST_ID || !state.get(targetId)) return false;
     const name = state.nameOf(targetId);
+    const fp = state.get(targetId)?.fp;
+    if (fp) admittedFps.delete(fp); // no auto-readmit for the kicked
     relay?.drop(targetId, true); // ban=true blocklists the fingerprint
     state.removeGuest(targetId);
     drafts.removeUser(targetId);
@@ -761,6 +767,7 @@ async function main() {
     // addGuest restores the role a returning fingerprint last held this session
     // (spec §identity); a new/keyless guest takes the room default (opts.guests).
     const g = state.addGuest(knock.id, { name: info.name, fp: info.fp, role: info.role ?? opts.guests });
+    if (info.fp) admittedFps.add(info.fp); // reloads re-enter without a second admit
     log.event(`${g.name} joined as ${g.role}`);
     // The join context card lands in the guest's own scrollback first (spec §join card).
     try {
@@ -804,6 +811,9 @@ async function main() {
   const handleUi = (id, action) => {
     if (!action || typeof action !== 'object') return;
     const role = state.roleOf(id) ?? 'viewer';
+    // While paused, only room management stays live (resume/end/admit/roles);
+    // draft edits, scrolling, and queue changes are frozen with the mirror.
+    if (state.paused && !['admit', 'deny', 'kick', 'role', 'command', 'resync'].includes(action.kind)) return;
     if (action.kind === 'admit' || action.kind === 'deny') {
       if (!atLeast(role, 'host')) return notify(id, 'only the host can admit or deny knocks');
       answerKnockById(action.id, action.kind === 'admit');
@@ -958,6 +968,14 @@ async function main() {
         admitAndCatchUp(r, knock);
         return;
       }
+      // A guest admitted earlier this session (same browser token) walks straight
+      // back in — a reload or network blip shouldn't cost them a second admit.
+      // Kicked fps were removed above AND banned at the relay, so they never reach here.
+      if (knock.fp && admittedFps.has(knock.fp)) {
+        knockInfo.set(knock.id, { name: knock.name, fp: knock.fp });
+        admitAndCatchUp(r, knock);
+        return;
+      }
       // Dedup by fingerprint: a WS reconnect during the join flow re-knocks with a new
       // connection id but the SAME fp — replace the stale card, don't stack a duplicate
       // (finding 3). Deny the superseded connection so it can't be admitted later.
@@ -988,6 +1006,9 @@ async function main() {
       // dropped (v1: guest mouse doesn't drive the shared session).
       const { human } = guestPartitioner(id)(data);
       if (!human) return;
+      // Paused = the room is frozen for every browser/ssh participant (the host's
+      // own terminal still works): no typing, no draft edits, until resume.
+      if (state.paused) return;
       const actor = actorOf(id); // a host tab drives Claude AS the host (finding 4)
       const role = state.roleOf(actor) ?? 'viewer';
       const composing = drafts.activeBox(actor) !== null;

@@ -535,6 +535,7 @@ function main() {
     };
     sock.onclose = () => {
       if (sock !== ws || intentionalClose) return;
+      if (phase === 'removed') return; // the kicked panel owns the screen now
       if (phase === 'live') showDisconnected();
       // A silent close mid-knock is NOT evidence the host is offline (a superseded
       // knock or a network blip closes the same way) — never claim that it is.
@@ -573,7 +574,10 @@ function main() {
         if (phase === 'live') render();
         break;
       case 'error':
-        fail(msg.reason);
+        // Kicked mid-session: the mirror disappears behind a full-screen panel —
+        // never the old "removed" bytes smeared into a still-visible terminal.
+        if (msg.reason === 'kicked') showRemoved();
+        else fail(msg.reason);
         break;
       default:
         break;
@@ -597,6 +601,14 @@ function main() {
     phase = 'closed';
     const banner = $('#dc-banner');
     banner.hidden = false;
+  }
+
+  function showRemoved() {
+    phase = 'removed';
+    intentionalClose = true; // the close that follows is expected — no reconnect UI
+    liveScreen.hidden = true;
+    joinScreen.hidden = true;
+    $('#removed').hidden = false;
   }
 
   // ── go live ──────────────────────────────────────────────────────────────────
@@ -1094,6 +1106,7 @@ function main() {
   }
 
   let lastDraftsJson = '';
+  let knownBoxIds = new Set(); // boxes already on screen — only NEW ones animate in
   function renderDrafts(v) {
     // Rebuild only when the drafts actually changed: every rebuild would destroy a
     // native drag-selection, and state frames arrive for unrelated reasons
@@ -1102,14 +1115,23 @@ function main() {
     if (json === lastDraftsJson || draggingDraft) return;
     lastDraftsJson = json;
     draftsLayer.innerHTML = '';
+    const nextIds = new Set();
     for (const [i, d] of v.drafts.entries()) {
+      nextIds.add(d.id);
       // A box I just spawned by double-click lands where I clicked — for everyone.
       if (pendingSpawn && d.focusedBySelf && !d.place && d.text === '') {
         sendMsg({ t: 'ui', action: { kind: 'place', id: d.id, ...pendingSpawn } });
         d.place = pendingSpawn; // optimistic, until the next state frame confirms
         pendingSpawn = null;
       }
-      const box = el('div', 'fdraft' + (d.focusedBySelf ? ' focused' : ''));
+      // Entrance animation only for a box that just APPEARED — this render runs on
+      // every keystroke (full rebuild), and replaying it would strobe. Same idea
+      // for the border beam: phase it by wall-clock so a rebuild never resets it.
+      const box = el(
+        'div',
+        'fdraft' + (d.focusedBySelf ? ' focused' : '') + (knownBoxIds.has(d.id) ? '' : ' anim-in'),
+      );
+      box.style.setProperty('--beam-delay', -(Date.now() % 1960) + 'ms');
       // Someone ELSE is writing in it → the ring glows in their color.
       if (!d.focusedBySelf && d.carets.length > 0) {
         box.classList.add('edited');
@@ -1171,6 +1193,7 @@ function main() {
       });
       draftsLayer.append(box);
     }
+    knownBoxIds = nextIds;
   }
 
   // Apply a draft's SHARED placement (stage fractions from the brain), or the home
@@ -1487,6 +1510,10 @@ function main() {
     waiting.hidden = false;
   } else {
     showJoin();
+    // A returning guest (room in the URL, name + identity token remembered) knocks
+    // automatically — with the brain's auto-readmit, a reload glides straight back
+    // into the room instead of parking on the join form.
+    if (loc.code && store.get(NAME_KEY) && store.get(TOKEN_KEY)) beginKnock();
   }
 }
 

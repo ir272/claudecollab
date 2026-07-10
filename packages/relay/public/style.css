@@ -587,6 +587,14 @@ body {
   inset: 0;
   pointer-events: none; /* the terminal stays clickable between drafts */
   z-index: 8;
+  transition: opacity 200ms ease-out;
+}
+/* /pause hides EVERYTHING the mirror promised to hide — drafts and cursors go
+   with it (they float above the pause scrim otherwise, still editable). */
+#stage.paused .overlays,
+#stage.paused #cursors {
+  opacity: 0;
+  pointer-events: none !important;
 }
 .fdraft {
   position: absolute;
@@ -600,8 +608,74 @@ body {
   -webkit-backdrop-filter: blur(16px);
   box-shadow: 0 0 0 1px var(--ring), 0 18px 44px rgba(0, 0, 0, 0.6);
 }
+/* Entrance runs ONLY on a box that just appeared (.anim-in from the renderer) —
+   drafts fully re-render per keystroke, and replaying it would strobe. */
+.fdraft.anim-in {
+  animation: draft-in 180ms ease-out;
+}
+@keyframes draft-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+/* home-position drafts translate; give them their own entrance so the transform
+   in the keyframe never fights the translateX(-50%) placement */
+.fdraft.home.anim-in {
+  animation: draft-in-home 180ms ease-out;
+}
+@keyframes draft-in-home {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.97);
+  }
+}
+/* border-beam (github.com/Jakubantalik/border-beam, CSS-native rendition): a
+   bright stroke travelling the border ring. Runs only on the box being edited —
+   amber for your own focus, the editor's identity color for someone else's. */
+@property --beam {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+.fdraft::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 13px;
+  padding: 1.5px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--beam),
+    transparent 0deg,
+    var(--beam-c, rgba(232, 163, 61, 0.95)) 42deg,
+    transparent 90deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+  /* the negative delay phases the beam by wall-clock (set per render), so the
+     per-keystroke rebuild never resets it to angle zero */
+  animation: beam-spin 1.96s linear infinite;
+  animation-delay: var(--beam-delay, 0ms);
+}
+@keyframes beam-spin {
+  to {
+    --beam: 360deg;
+  }
+}
+.fdraft.focused::before,
+.fdraft.edited::before {
+  opacity: 1;
+}
+.fdraft.edited::before {
+  --beam-c: var(--ec, rgba(232, 163, 61, 0.95));
+}
 .fdraft.focused {
-  box-shadow: 0 0 0 1px rgba(232, 163, 61, 0.5), 0 0 22px rgba(232, 163, 61, 0.12),
+  box-shadow: 0 0 0 1px rgba(232, 163, 61, 0.35), 0 0 22px rgba(232, 163, 61, 0.12),
     0 18px 44px rgba(0, 0, 0, 0.6);
 }
 /* someone else's caret is in it → ring in THEIR color */
@@ -827,4 +901,52 @@ body {
   background-color: rgba(232, 163, 61, 0.9) !important;
   outline: none !important;
   animation: caret-blink 1.1s steps(1) infinite;
+}
+
+/* ── removed panel: the host kicked you — the mirror is gone, full stop ────── */
+#removed {
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+}
+.removed-card {
+  width: min(420px, 100%);
+  text-align: center;
+  background: var(--glass-2);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 14px;
+  padding: 2.5rem 2rem;
+  box-shadow: 0 0 0 1px var(--red-ring), 0 24px 60px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  animation: removed-in 220ms ease-out;
+}
+@keyframes removed-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+.removed-icon {
+  font-size: 2rem;
+  color: var(--red);
+  margin-bottom: 0.5rem;
+}
+.removed-card h1 {
+  font-size: 1.1rem;
+  margin: 0 0 0.4rem;
+  letter-spacing: -0.01em;
+}
+.removed-card p {
+  margin: 0;
+  color: var(--text-dim);
+}
+
+/* header-anchored popovers grow from where they came (spatial consistency) */
+.popover,
+.queue-pop {
+  transform-origin: top;
+}
+#cursors {
+  transition: opacity 200ms ease-out;
 }
