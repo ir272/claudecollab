@@ -1,15 +1,18 @@
-// The band renderer — the bottom N rows painted *under* Claude's full-screen TUI.
+// The band renderer — the SINGLE status line painted under Claude's full-screen TUI.
 //
-// Claude runs in a PTY that is `bandRows` shorter than the real terminal (see
-// pty.js), so its absolute cursor addressing can never touch the reserved rows.
-// paint() draws only those rows: it saves the cursor (DECSC), positions to each
-// band row, clears it, writes content, and restores the cursor (DECRC) — exactly
-// the tmux-status-bar technique proven in spike/wrap.py.
+// Post-dogfood verdict (design v2): the host terminal is the engine room — plain,
+// native Claude, exactly as solo. The multiplayer band is dead; the browser is the
+// one multiplayer surface for everyone, host included. All the terminal shows is one
+// status line, pinned to the very bottom row:
 //
-// paint() is a pure function of state: same state in, same ANSI string out. That
-// keeps it golden-file testable and lets the caller redraw on Claude's own
-// ?2026l frame boundaries without any hidden state. For v1 (Task 3) the dynamic
-// region is a placeholder; Task 7 swaps in real draft boxes / queue / prompts.
+//   ─ <room> · <n> people · <claude-state> · <room URL> ─
+//
+// Claude runs in a PTY one row shorter than the real terminal (see pty.js), so its
+// absolute cursor addressing can never touch that bottom row. paint() draws only the
+// band row(s): it saves the cursor (DECSC), positions + clears each row, writes the
+// status line on the last one, and restores the cursor (DECRC) — the tmux status-bar
+// technique. paint() is a pure function of state (same state in, same ANSI out), so
+// it stays golden-file testable.
 
 // ── ANSI vocabulary ───────────────────────────────────────────────────────────
 const SAVE = '\x1b7'; // DECSC — save cursor position
@@ -17,10 +20,10 @@ const RESTORE = '\x1b8'; // DECRC — restore cursor position
 const CLEAR_LINE = '\x1b[2K'; // erase entire line
 const RESET = '\x1b[0m';
 const ORANGE = '\x1b[38;5;214m'; // status line (matches spike band)
-const DIM = '\x1b[38;5;245m'; // placeholder / secondary text
 const posLine = (row) => `\x1b[${row};1H`; // move to column 1 of `row`
 
 // Role → status-line glyph (spec §roles: viewer 👁, prompter ✎, driver ⚑, host ★).
+// Still exported for the join context card (brain/card.js) and event toasts.
 export const ROLE_GLYPH = Object.freeze({
   host: '★',
   driver: '⚑',
@@ -30,7 +33,7 @@ export const ROLE_GLYPH = Object.freeze({
 
 // ── display-width helpers ─────────────────────────────────────────────────────
 // A terminal cannot count JS UTF-16 code units; it counts cells. These helpers
-// let us truncate band content so it can never wrap into Claude's rows. Width
+// let us truncate the status line so it can never wrap into Claude's rows. Width
 // follows the wcwidth convention: combining marks 0, East-Asian-wide + emoji 2,
 // ambiguous 1. Load-bearing for the "no overflow" invariant, not cosmetics.
 
@@ -103,216 +106,59 @@ export function truncateToWidth(str, max) {
   return out;
 }
 
-// ── band lines ─────────────────────────────────────────────────────────────────
+// ── the status line ─────────────────────────────────────────────────────────────
 
-const color = (sgr, plain, width) =>
-  width <= 0 ? '' : sgr + truncateToWidth(plain, width) + RESET;
+const color = (sgr, plain, width) => (width <= 0 ? '' : sgr + truncateToWidth(plain, width) + RESET);
 
 /**
- * The room status line: `─ <room|claude-share> · <participants|solo> · mode: <mode> ─`.
+ * The one and only band line: `─ <room> · <n> people · <claude-state> · <room URL> ─`.
+ * Missing pieces are simply dropped (no room URL when solo, no count when unknown);
+ * the whole line is width-clamped so it can never wrap into Claude's rows. Transient
+ * messages (toasts, pause, event notices) are folded into the claude-state slot by
+ * the caller — the band is one line and never grows.
+ *
  * @param {object} state
- * @param {number} width  column budget (real terminal cols)
+ * @param {string|null} [state.room]        room code (null ⇒ "claude-share")
+ * @param {number} [state.people]           participant count
+ * @param {string} [state.claudeState]      Claude's state / a folded-in toast
+ * @param {string|null} [state.url]         the room URL to print (null when solo)
+ * @param {number} [width=80]               column budget
  * @returns {string} colored, width-clamped line
  */
 export function statusLine(state = {}, width = 80) {
   const room = state.room || 'claude-share';
-  const parts = state.participants ?? [];
-  const who = parts.length
-    ? parts.map((p) => `${p.name}${ROLE_GLYPH[p.role] ?? ''}`).join(' ')
-    : 'solo';
-  const mode = state.mode ?? 'default';
-  const plain = `─ ${room} · ${who} · mode: ${mode} ─`;
-  return color(ORANGE, plain, width);
-}
-
-// The dynamic region below the status line. Placeholder when the caller hasn't
-// composed anything yet; otherwise `state.lines` carries the real draft boxes /
-// queue / knock+admit prompts built by the helpers below.
-function placeholderLine(state = {}, width = 80) {
-  const plain = state.status ?? 'drafts · queue · prompts render here';
-  return color(DIM, plain, width);
+  const parts = [room];
+  const n = state.people;
+  if (Number.isFinite(n)) parts.push(`${n} ${n === 1 ? 'person' : 'people'}`);
+  if (state.claudeState) parts.push(String(state.claudeState));
+  if (state.url) parts.push(String(state.url));
+  return color(ORANGE, `─ ${parts.join(' · ')} ─`, width);
 }
 
 /**
- * The band height for a given amount of content, computed each repaint so the band
- * grows/shrinks with what it must show (status + draft boxes + queue + knocks) and
- * NEVER bleeds past the screen (spec §renderer; dogfood finding: 2 draft boxes drew
- * past the bottom edge). The band reserves at least `min` rows and may grow up to a
- * third of the screen — but always leaves Claude at least one row. Overflow beyond
- * this height is collapsed into a "+N more" line by paint(), never painted off-screen.
+ * Render the band as a single ANSI string, positioned at the bottom `bandRows` rows
+ * of a `cols`×`rows` terminal. The status line sits on the band's LAST row (the
+ * terminal's very bottom); any rows above it in the band are cleared blank. The
+ * cursor is saved before and restored after so Claude's own cursor is never
+ * disturbed. In practice bandRows is 1 (the band is permanently one line).
  *
- * @param {number} contentCount  desired band rows (status line + dynamic lines)
- * @param {number} rows          the (clamped, shared) terminal rows
- * @param {{min?:number}} [opts] minimum reserved rows (defaults to 6)
- * @returns {number} rows to reserve for the band, in [1, min(cap, rows-1)]
- */
-export function bandHeight(contentCount, rows, { min = 6 } = {}) {
-  const r = Math.max(1, Math.floor(rows) || 1);
-  const cap = Math.min(Math.max(min, Math.floor(r / 3)), Math.max(1, r - 1));
-  const desired = Math.max(Math.floor(contentCount) || 0, min);
-  return Math.max(1, Math.min(desired, cap));
-}
-
-// Pad a plain string to a visible width (truncating first if it's too wide).
-function padTo(str, width) {
-  const t = truncateToWidth(str, width);
-  return t + ' '.repeat(Math.max(0, width - stringWidth(t)));
-}
-
-// A live cursor block (spec draft-lines frame: `make the hero full-bleed▊▊`).
-const CARET = '▊';
-
-/**
- * Overlay every participant's live cursor into the draft body: a caret block at the
- * cursor's offset, tagged with the owner's name so a cursor is identifiable without
- * relying on color (spec: "name tags carry identity; color is a bonus"). This is the
- * wow beat — two named cursors writing one prompt together.
- *
- * Carets are inserted at their display-text offsets right-to-left (so earlier offsets
- * stay valid), then embedded newlines collapse to the single-line ⏎ form. Everything
- * stays plain text (no ANSI) so the caller's width clamp measures it correctly.
- *
- * @param {string} text                    the draft's collapsed display text
- * @param {{name?:string, offset:number}[]} cursors
- * @returns {string}
- */
-function withCarets(text, cursors) {
-  let s = String(text ?? '');
-  const marks = (cursors ?? [])
-    .filter((c) => c && Number.isInteger(c.offset))
-    .sort((a, b) => b.offset - a.offset);
-  for (const c of marks) {
-    const at = Math.max(0, Math.min(s.length, c.offset));
-    s = s.slice(0, at) + CARET + (c.name ?? '') + s.slice(at);
-  }
-  return s.replace(/\n/g, ' ⏎ ');
-}
-
-/**
- * Render one draft as its own author-tagged box (spec §draft lines: "each draft
- * renders as its own visually separated, author-tagged box — never as stacked bare
- * lines"). Exactly three rows; the focused box carries the `↵ sends this draft`
- * hint. Content is single-line (embedded newlines collapse to ⏎), carries each
- * participant's live cursor, and is truncated to the inner width so it can never
- * wrap into Claude's rows.
- *
- * @param {{text:string, authors:string[], cursors?:{name?:string,offset:number}[]}} box
- * @param {{cols:number, focused?:boolean}} opts
- * @returns {[string,string,string]}
- */
-export function draftBox(box, { cols = 80, focused = false } = {}) {
-  const W = Math.max(8, cols);
-  const authors = (box.authors ?? []).join(' + ') || 'draft';
-  const hint = focused ? ' ↵ sends this draft ─' : '';
-  const left = `╭─ ${authors} `;
-  const right = `${hint}╮`;
-  const mid = Math.max(0, W - stringWidth(left) - stringWidth(right));
-  const top = truncateToWidth(left + '─'.repeat(mid) + right, W);
-
-  const oneLine = withCarets(box.text, box.cursors);
-  const body = `│ ${padTo(oneLine, W - 4)} │`;
-  const bottom = `╰${'─'.repeat(W - 2)}╯`;
-  return [top, body, bottom];
-}
-
-/**
- * Render the queue as a count-headed, attributed, ordered list (spec §queue). One
- * row per item, each truncated to `cols`. Empty queue → no lines at all.
- * @param {{author:string, text:string}[]} items
- * @param {{cols:number}} opts
- * @returns {string[]}
- */
-export function queueBlock(items = [], { cols = 80 } = {}) {
-  if (!items.length) return [];
-  const lines = [truncateToWidth(`queue (${items.length}):`, cols)];
-  items.forEach((it, i) => {
-    lines.push(truncateToWidth(`  ${i + 1}. ${it.author} → ${it.text}`, cols));
-  });
-  return lines;
-}
-
-/**
- * Format the knock/admit prompt line (spec §knock). A first-time key (seen==null)
- * gets the warning; a returning key notes its prior name.
- * @param {{name:string, fp:string, seen:string|boolean|null}} knock
- * @param {{cols:number}} opts
- * @returns {string}
- */
-export function knockLine(knock, { cols = 80 } = {}) {
-  const fp = knock.fp ? String(knock.fp).replace(/^SHA256:/, '').slice(0, 6) + '…' : 'no key';
-  const seenNote =
-    knock.seen == null || knock.seen === false
-      ? ' · ⚠ first time seeing this key'
-      : ` · seen before as ${knock.seen}`;
-  return truncateToWidth(`🚪 "${knock.name}" knocking — key ${fp}${seenNote} — admit? (y/n)`, cols);
-}
-
-/**
- * Build exactly `bandRows` content strings (top = status line, then the dynamic
- * region). Each is already width-clamped to `cols`. When the caller supplies
- * `state.lines` (composed draft boxes / queue / prompts), those fill the dynamic
- * region; otherwise a dim placeholder does.
- *
- * If the composed content is TALLER than `bandRows`, the overflow is collapsed into
- * a trailing "+N more" line so the band can never paint past its reserved rows —
- * the caller sizes `bandRows` from content via bandHeight(), so this only clips the
- * true excess (spec §renderer; dogfood finding: content must not bleed off-screen).
- */
-function bandLines(state, cols, bandRows) {
-  const status = statusLine(state, cols);
-  const dynamic = Array.isArray(state.lines) ? state.lines : null;
-
-  // Legacy placeholder region (no composed lines): status, a dim placeholder, blanks.
-  if (!dynamic) {
-    const lines = [status];
-    for (let i = 1; i < bandRows; i++) lines.push(i === 1 ? placeholderLine(state, cols) : '');
-    return lines;
-  }
-
-  // Composed content = status + the caller's dynamic lines. Fit it into the reserved
-  // rows: pad with blanks when it fits, or keep what fits and replace the last row
-  // with a "+N more" marker so nothing is painted past the band's last row.
-  const content = [status, ...dynamic.map((l) => (l != null ? truncateToWidth(String(l), cols) : ''))];
-  if (content.length > bandRows) {
-    if (bandRows <= 1) return content.slice(0, bandRows);
-    const keep = bandRows - 1;
-    const head = content.slice(0, keep);
-    head.push(truncateToWidth(`+${content.length - keep} more`, cols));
-    return head;
-  }
-  while (content.length < bandRows) content.push('');
-  return content;
-}
-
-/**
- * Render the band region as a single ANSI string, positioned at the bottom
- * `bandRows` rows of a `cols`×`rows` terminal. Cursor is saved before and
- * restored after so Claude's own cursor is never disturbed.
- *
- * @param {object} state
- * @param {number} [state.cols=80]      real terminal columns
- * @param {number} [state.rows=24]      real terminal rows
- * @param {number} [state.bandRows=2]   reserved bottom rows
- * @param {string|null} [state.room]    room code (null = solo / not yet assigned)
- * @param {{name:string,role:string}[]} [state.participants]
- * @param {string} [state.mode]         Claude permission mode
- * @param {string} [state.status]       placeholder text for the dynamic region
- * @param {string[]} [state.lines]      composed dynamic lines (draft boxes/queue/prompts);
- *                                      overrides the placeholder when present
+ * @param {object} state       see {@link statusLine} plus:
+ * @param {number} [state.cols=80]     real (clamped) terminal columns
+ * @param {number} [state.rows=24]     real (clamped) terminal rows
+ * @param {number} [state.bandRows=1]  reserved bottom rows
  * @returns {string} ANSI for the band only (empty string if bandRows <= 0)
  */
 export function paint(state = {}) {
   const cols = state.cols ?? 80;
   const rows = state.rows ?? 24;
-  const bandRows = state.bandRows ?? 2;
+  const bandRows = state.bandRows ?? 1;
   if (bandRows <= 0) return '';
 
   const top = Math.max(1, rows - bandRows + 1);
-  const lines = bandLines(state, cols, bandRows);
-
   let out = SAVE;
   for (let i = 0; i < bandRows; i++) {
-    out += posLine(top + i) + CLEAR_LINE + (lines[i] ?? '');
+    const content = i === bandRows - 1 ? statusLine(state, cols) : '';
+    out += posLine(top + i) + CLEAR_LINE + content;
   }
   out += RESTORE;
   return out;

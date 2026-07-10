@@ -1,23 +1,26 @@
-// End-to-end smoke test (Task 8) — the whole system on localhost, real processes:
+// End-to-end smoke test — the whole system on localhost, real processes, in the
+// design-v2 shape (the host terminal is the engine room; the browser is the one
+// multiplayer surface for everyone, host included):
 //
-//   • the relay ssh server (packages/relay), in-process on an ephemeral port;
-//   • the real host CLI (packages/cli/bin/claude-share.js), spawned inside a PTY
-//     so its band actually paints and raw-mode stdin works — driving a fake-claude
-//     stub (test/fixtures/fake-claude.cjs) that echoes prompts and fires the
-//     injected lifecycle hooks, so state detection is real, not mocked;
-//   • two scripted ssh guests, exactly as a stock `ssh` client would connect.
+//   • the relay ssh server + browser door (packages/relay), in-process on ephemeral
+//     ports;
+//   • the real host CLI (packages/cli/bin/claude-share.js), spawned inside a PTY so
+//     its status line paints and stdin passes STRAIGHT THROUGH — driving a fake-claude
+//     stub (test/fixtures/fake-claude.cjs) that echoes prompts and fires the injected
+//     lifecycle hooks, so state detection is real, not mocked;
+//   • the host's own browser tab, simulated as a `ws` WebSocket to the web door with
+//     the host token — every multiplayer move (admit, /role, /kick, /end) is made here;
+//   • an ssh guest, exactly as a stock `ssh` client would connect.
 //
-// The fake-claude is resolved as `claude` on the CLI child's PATH (the CLI only
-// injects hooks when its command is literally "claude"), so the full hook path is
-// exercised end to end. Scenario (spec §testing approach, plan Task 8):
-//
-//   host boots → guest A knocks (named key), admitted, promoted to prompter →
-//   A composes a draft + Enter → the prompt reaches Claude → guest B knocks
-//   keyless (viewer, via --guests viewer) → A sends a second draft while Claude is
-//   mid-ask, so it QUEUES, attributed → a permission ask arms the gate → A's `y`
-//   as a prompter is REJECTED → host promotes A to driver → A's `y` is ACCEPTED
-//   and the queue drains → host kicks B → /end writes session.md → assert the
-//   shared transcript, the attributed queue, the gate decisions, and session.md.
+// Scenario:
+//   host boots → prints the room URL with a host token → the host tab opens on that
+//   URL and is auto-admitted as host → guest A knocks (named key) → the host tab admits
+//   it from the browser → the host tab promotes A to prompter → A composes a draft that
+//   reaches Claude, hits a permission ask, and A queues a second prompt while busy → A's
+//   prompter `y` is REJECTED → the host tab promotes A to driver → A's `y` is ACCEPTED
+//   and the queue drains → the host tab kicks A → the host tab ends the session → assert
+//   the mirror, the attributed queue in the overlay state, the gate decision, and
+//   session.md.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,6 +30,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import ssh2 from 'ssh2';
 import * as ptyNs from 'node-pty';
+import { WebSocket } from 'ws';
 import { startRelay } from '../packages/relay/server.js';
 
 const ptySpawn = ptyNs.spawn ?? ptyNs.default?.spawn;
@@ -34,8 +38,7 @@ const { Client, utils } = ssh2;
 const { generateKeyPairSync, parseKey } = utils;
 
 // ssh2's generateKeyPairSync occasionally emits a key its own parser rejects
-// ("Malformed OpenSSH private key"). Validate with parseKey and regenerate so a
-// known upstream flake can't destabilize this end-to-end test.
+// ("Malformed OpenSSH private key"). Validate with parseKey and regenerate.
 function newKey() {
   for (let i = 0; i < 8; i++) {
     const priv = generateKeyPairSync('ed25519').private;
@@ -50,6 +53,7 @@ const cliEntry = join(repoRoot, 'packages/cli/bin/claude-share.js');
 const fakeClaude = join(here, 'fixtures', 'fake-claude.cjs');
 
 const DEFAULT_TIMEOUT = 20000;
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A text sink with substring waits — the accumulated buffer, so a match is found
 // even if the write was chunked or a repaint has since overwritten the cells.
@@ -84,8 +88,6 @@ function makeSink() {
     },
   };
 }
-
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A scripted ssh guest: raw pty + shell, accumulating output — the shape a real
 // terminal presents to the relay. `keyboard:true` drives the keyless flow.
@@ -124,11 +126,93 @@ function connectGuest(port, { code, privateKey, keyboard } = {}) {
   });
 }
 
-test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, kick, /end', { timeout: 180000 }, async (t) => {
-  // ── the relay (the "brainless" front door) ─────────────────────────────────
-  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey(), hostName: 'ian' });
+// The host's browser tab, over the web door. It carries the host token, so the brain
+// auto-admits it as host. Screen bytes arrive as binary frames (ignored here); the
+// overlay {t:'state'} and the {t:'joined'} cue arrive as text frames. It mails back
+// the exact {t:'ui'} admit/deny/command messages the real browser client sends.
+function connectHostTab(webPort, { code, token }) {
+  const states = [];
+  const waiters = [];
+  const joinWaiters = [];
+  let selfId = null;
+  let joined = false;
+
+  const ws = new WebSocket(`ws://127.0.0.1:${webPort}/ws?room=${code}&host=${token}`);
+
+  const pushState = (data) => {
+    states.push(data);
+    for (let i = waiters.length - 1; i >= 0; i--) {
+      if (waiters[i].pred(data)) {
+        clearTimeout(waiters[i].timer);
+        waiters.splice(i, 1)[0].resolve(data);
+      }
+    }
+  };
+
+  ws.on('message', (buf, isBinary) => {
+    if (isBinary) return; // screen bytes → the xterm mirror in a real browser
+    let msg;
+    try {
+      msg = JSON.parse(buf.toString('utf8'));
+    } catch {
+      return;
+    }
+    if (msg.t === 'joined') {
+      selfId = msg.id;
+      joined = true;
+      joinWaiters.splice(0).forEach((r) => r());
+    } else if (msg.t === 'state') {
+      pushState(msg.data);
+    }
+  });
+
+  const send = (obj) => ws.send(JSON.stringify(obj));
+  const api = {
+    ws,
+    get selfId() {
+      return selfId;
+    },
+    onJoined: (ms = DEFAULT_TIMEOUT) =>
+      joined
+        ? Promise.resolve()
+        : new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('host tab: never joined')), ms);
+            joinWaiters.push(() => {
+              clearTimeout(timer);
+              resolve();
+            });
+          }),
+    admit: (id) => send({ t: 'ui', action: { kind: 'admit', id } }),
+    command: (text) => send({ t: 'ui', action: { kind: 'command', text } }),
+    resize: (cols, rows) => send({ t: 'resize', cols, rows }),
+    latestState: () => states[states.length - 1] ?? null,
+    waitForState(pred, ms = DEFAULT_TIMEOUT) {
+      const found = [...states].reverse().find(pred);
+      if (found) return Promise.resolve(found);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('host tab: timed out waiting for a state frame')), ms);
+        waiters.push({ pred, resolve, timer });
+      });
+    },
+    close: () => {
+      try {
+        ws.close();
+      } catch {}
+    },
+  };
+
+  return new Promise((resolve, reject) => {
+    ws.on('open', () => resolve(api));
+    ws.on('error', reject);
+  });
+}
+
+test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, admit, draft, queue, gate, kick, /end', { timeout: 180000 }, async (t) => {
+  // ── the relay (ssh front door + browser web door), both ephemeral ───────────
+  const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey(), hostName: 'ian' });
   t.after(() => relay.close());
-  const port = relay.port;
+  const { port, webPort } = relay;
+  assert.ok(webPort, 'the relay opened a browser web door');
 
   // ── isolate the CLI's filesystem side effects into temp dirs ────────────────
   const workDir = mkdtempSync(join(tmpdir(), 'cs-e2e-work-')); // cwd → session.md lands here
@@ -147,17 +231,18 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   const shim = join(binDir, 'claude');
   writeFileSync(shim, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeClaude)} "$@"\n`, { mode: 0o755 });
 
-  // ── boot the real host CLI inside a PTY ─────────────────────────────────────
+  // ── boot the real host CLI inside a wide PTY ────────────────────────────────
+  // Wide so the full room URL paints in the status line before any guest clamps it.
   const host = makeSink();
   let exited = false;
   const exitWaiters = [];
   const cli = ptySpawn(
     process.execPath,
-    [cliEntry, '--relay', `ssh://127.0.0.1:${port}`, '--guests', 'viewer', '--band-rows', '8'],
+    [cliEntry, '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'viewer'],
     {
       name: 'xterm-256color',
-      cols: 100,
-      rows: 30,
+      cols: 200,
+      rows: 50,
       cwd: workDir,
       env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' },
     },
@@ -183,17 +268,27 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
     } catch {}
   });
 
-  // ── room code (from the invite toast the CLI paints once connected) ─────────
-  // Cold start is the slow step: spawn node, load node-pty (native), serve the hook
-  // socket, ssh to the relay, get a room. Under heavy parallel load the process can
-  // be CPU-starved for many seconds before it paints, so give this one wait ample
-  // headroom (every later step is sub-second once booted).
-  await host.waitFor('room ready · invite copied: ssh ', 60000);
-  const m = host.get().match(/ssh (?:-p \d+ )?([a-z]+-[a-z]+)@127\.0\.0\.1/);
-  assert.ok(m, 'invite line carries an adjective-animal room code');
-  const code = m[1];
+  // ── the room URL (printed in the status line once connected) ────────────────
+  // Cold start is the slow step (spawn node, load node-pty, ssh to the relay, get a
+  // room), so give this one wait ample headroom; every later step is sub-second.
+  await host.waitFor('link copied', 60000);
+  const m = host.get().match(/http:\/\/127\.0\.0\.1:(\d+)\/([a-z]+-[a-z]+)\?host=([0-9a-f]+)/);
+  assert.ok(m, 'the status line carries a room URL with a host token');
+  assert.equal(Number(m[1]), webPort, 'the URL points at the web door port');
+  const code = m[2];
+  const token = m[3];
 
-  // ── guest A: named key, knock → admit ───────────────────────────────────────
+  // ── the host's own browser tab: auto-admitted as host on the host token ─────
+  const hostTab = await connectHostTab(webPort, { code, token });
+  t.after(() => hostTab.close());
+  await hostTab.onJoined();
+  hostTab.resize(120, 40); // keep the shared clamp comfortably above the 80x24 floor
+  const s0 = await hostTab.waitForState((s) => s.room === code);
+  const self = s0.participants.find((p) => p.id === hostTab.selfId);
+  assert.ok(self, 'the host tab is a participant in the overlay state');
+  assert.equal(self.role, 'host', 'the host tab was auto-admitted as host');
+
+  // ── guest A: named key, knocks → the host tab admits from the browser ───────
   const a = await connectGuest(port, { code, privateKey: newKey() });
   t.after(() => {
     try {
@@ -203,66 +298,40 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   await a.waitFor(`room ${code}`); // "connecting to ian's room <code>…"
   await a.waitFor('pick a name');
   a.type('a\r');
-  await host.waitFor('"a" knocking'); // knock renders in the band
-  cli.write('y'); // host admits
-  await host.waitFor('a joined');
+  const sKnock = await hostTab.waitForState((s) => s.knocks.some((k) => k.name === 'a'));
+  const knock = sKnock.knocks.find((k) => k.name === 'a');
+  hostTab.admit(knock.id); // the host admits from the browser, not the terminal
   await a.waitFor('session so far'); // the join context card lands in A's scrollback
   await a.waitFor("── you're live ──");
+  const aId = (await hostTab.waitForState((s) => s.participants.some((p) => p.name === 'a'))).participants.find(
+    (p) => p.name === 'a',
+  ).id;
 
-  // Promote A to prompter so A can compose (spec default here is viewer via --guests).
-  cli.write('/role @a prompter\r');
-  await host.waitFor('set a to prompter');
+  // ── the host tab promotes A to prompter (default guest role here is viewer) ─
+  hostTab.command('/role @a prompter');
+  await hostTab.waitForState((s) => s.participants.find((p) => p.id === aId)?.role === 'prompter');
 
-  // ── guest B: keyless (viewer default) ───────────────────────────────────────
-  const b = await connectGuest(port, { code, keyboard: true });
-  t.after(() => {
-    try {
-      b.client.end();
-    } catch {}
-  });
-  await b.waitFor('pick a name');
-  b.type('b\r');
-  await host.waitFor('"b" knocking');
-  cli.write('y');
-  await host.waitFor('b joined');
-
-  // ── A composes a draft and sends it; the prompt reaches Claude ───────────────
+  // ── A composes a draft that reaches Claude and hits a permission ask ─────────
   a.type('make the hero full-bleed [ask]\r');
   await host.waitFor('[claude] prompt: make the hero full-bleed'); // reached the (fake) claude
   await a.waitFor('[claude] prompt: make the hero full-bleed'); // and was mirrored to the guest
-  await host.waitFor('[claude] permission needed'); // claude hit a tool that needs permission
-
-  // The permission ask arms the gate — proven by the band status flipping (the
-  // 'ask' state is set by the Notification hook, which also arms y/n).
-  await host.waitFor('⚠ permission ask pending');
+  await a.waitFor('[claude] permission needed');
+  // The ask arms the gate — the overlay claude-state flips to 'ask' (Notification hook).
+  await hostTab.waitForState((s) => s.claudeState === 'ask');
 
   // ── A sends a second draft while Claude is busy → it QUEUES, attributed ──────
   a.type('use tailwind for all of it\r');
-  await host.waitFor('queue (1)');
-  await host.waitFor('a → use tailwind for all of it'); // attributed to A in the host band
-  // The band is part of the ONE live screen: the attributed queue is mirrored to
-  // the guest too. Nothing has SENT this text to (fake) Claude yet — it's still
-  // queued — so the only way the guest can have it is the mirrored band.
-  await a.waitFor('a → use tailwind for all of it');
-
-  // ── the queue is reachable: A queues a throwaway, then deletes it via /queue ──
-  // (Queue.edit/remove were implemented + tested but had no input path; /queue del
-  // <n> is the in-band affordance. A is a prompter, deleting their OWN item.)
-  a.type('scratch this idea\r');
-  await host.waitFor('queue (2)');
-  await host.waitFor('a → scratch this idea'); // item #2, attributed to A
-  a.type('/queue del 2\r');
-  await host.waitFor('removed queued item #2'); // the wired path ran queue.remove()
+  await hostTab.waitForState((s) => s.queue.some((q) => q.text === 'use tailwind for all of it' && q.author === aId));
 
   // ── the gate: a prompter's `y` is REJECTED (never reaches Claude) ────────────
   a.type('y');
-  await delay(600); // long enough that a wrongly-forwarded y would have answered the ask
+  await delay(700); // long enough that a wrongly-forwarded y would have answered the ask
   assert.ok(!host.has('permission granted'), "prompter's y did not answer the permission ask");
   assert.ok(!a.has('permission granted'), 'guest saw no approval from the rejected y');
 
-  // ── host promotes A to driver; now A's `y` is ACCEPTED ───────────────────────
-  cli.write('/role @a driver\r');
-  await host.waitFor('set a to driver');
+  // ── the host tab promotes A to driver; now A's `y` is ACCEPTED ───────────────
+  hostTab.command('/role @a driver');
+  await hostTab.waitForState((s) => s.participants.find((p) => p.id === aId)?.role === 'driver');
   a.type('y');
   await host.waitFor('[claude] permission granted'); // driver's y reached Claude
   await a.waitFor('[claude] permission granted');
@@ -270,31 +339,13 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   await host.waitFor('[claude] prompt: use tailwind for all of it');
   await a.waitFor('[claude] prompt: use tailwind for all of it');
 
-  // ── /recap posts the summary to the SHARED screen (guests + host read it) ─────
-  // A's earlier rejected prompter-`y` is still sitting in A's draft (spec: a blocked
-  // y/n is "just typing"); clear the line (ctrl+u) so /recap composes cleanly.
-  a.type('\x15');
-  a.type('/recap\r'); // A is a driver now; /recap is prompter+
-  await host.waitFor('session recap'); // the full prose reaches the host
-  await a.waitFor('session recap'); // …and is mirrored to the guest, not host-only
+  // ── the host tab kicks A ─────────────────────────────────────────────────────
+  hostTab.command('/kick @a');
+  await a.waitFor('removed'); // A sees the kick copy
+  await a.onClose(); // and is disconnected
 
-  // ── guest A self-detaches (Ctrl+C): the host frees the seat, no ghost lingers ─
-  a.type('\x03');
-  await host.waitFor('a left'); // the same cleanup path as a natural leave fires
-  await a.onClose(); // and A's connection is dropped
-
-  // ── host kicks B ─────────────────────────────────────────────────────────────
-  cli.write('/kick @b\r');
-  await host.waitFor('b was kicked');
-  await b.waitFor('removed'); // B sees the kick copy
-  await b.onClose(); // and is disconnected
-
-  // ── /end: two confirmations, save session.md ────────────────────────────────
-  cli.write('/end\r');
-  await host.waitFor('end session? everyone will be disconnected');
-  cli.write('y');
-  await host.waitFor('save a session summary to session.md?');
-  cli.write('y');
+  // ── the host tab ends the session → session.md is written ────────────────────
+  hostTab.command('/end');
   await waitExit();
 
   // ── the attributed session record ────────────────────────────────────────────
@@ -302,11 +353,8 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   assert.match(md, /# claude-share session/);
   assert.match(md, /\*\*a\*\*: make the hero full-bleed/); // prompt 1, attributed to A
   assert.match(md, /\*\*a\*\*: use tailwind for all of it/); // prompt 2, attributed to A
-  assert.match(md, /removed queued item #2/); // /queue del reached queue.remove()
   assert.match(md, /set a to prompter/); // role change recorded
   assert.match(md, /set a to driver/); // role change recorded
-  assert.match(md, /a left/); // self-detach freed A's seat (no ghost participant)
-  assert.match(md, /b joined/); // B's join recorded
-  assert.match(md, /b was kicked/); // moderation recorded
+  assert.match(md, /a was kicked/); // moderation recorded
   assert.match(md, /src\/app\.js/); // PostToolUse file surfaced in "Files touched"
 });

@@ -1,28 +1,34 @@
 #!/usr/bin/env node
-// claude-share — wrap Claude Code in a PTY and paint a live multiplayer band
-// under its full-screen TUI. Runs Claude locally (frame-synced band redraws, full
-// I/O passthrough) and, unless `--no-relay`, connects to a relay so real ssh
-// guests can join and co-drive.
+// claude-share — wrap Claude Code in a PTY and share the session. Post-dogfood
+// verdict (design v2): the host terminal is the ENGINE ROOM — plain, native Claude,
+// exactly as solo. Host stdin passes straight through to Claude; the only overlay is
+// ONE status line pinned to the bottom row (room · people · claude-state · room URL).
 //
-// Task 7 makes the room real: RoomState tracks participants/roles/mode/size; the
-// per-role gate routes every keystroke (host and guests alike) to the draft
-// composer, to Claude, or to nothing; sent drafts land in the attributed queue and
-// drain one-per-idle (fail closed); /role /kick /pause /resume /recap /end are
-// wired; joiners get a context card before the mirror; a mode flip with guests
-// present raises a warning banner; the shared view is clamped to the smallest
-// participant (floor 80×24).
+// The browser is the one multiplayer surface for everyone, host included. On room
+// creation the CLI prints (and copies) the room URL with a host token; the host opens
+// it in a browser tab and does ALL multiplayer there — admitting knocks, co-writing
+// drafts, roles, /pause, /end. Web guests join by URL with the same knock/roles model;
+// the ssh guest door remains functional but uninvested.
 //
-// Solo mode (`--no-relay`) keeps the Task 3/5 behavior: the host drives Claude
-// directly and the band is a status placeholder — the composer is a sharing tool.
+// The brain still lives here (single authority): RoomState tracks
+// participants/roles/mode/size; the per-role gate routes every GUEST keystroke to the
+// draft composer, to Claude, or to nothing; sent drafts land in the attributed queue
+// and drain one-per-idle (fail closed); /role /kick /pause /resume /recap /end are
+// wired; joiners get a context card before the mirror; the shared view is clamped to
+// the smallest participant (floor 80×24). Browser tabs are views + labeled input
+// sources — the host tab's {t:'ui'} admit/deny answers knocks.
+//
+// Solo mode (`--no-relay`): the host drives Claude directly, no relay, no room URL.
 
 import process from 'node:process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
-import { paint, ROLE_GLYPH, draftBox, queueBlock, knockLine, bandHeight } from '../src/renderer.js';
+import { paint, ROLE_GLYPH } from '../src/renderer.js';
 import { ScreenSnapshot } from '../src/screen-snapshot.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
 import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js';
@@ -39,7 +45,7 @@ function parseArgs(argv) {
   const opts = {
     relay: true,
     relayUrl: 'ssh://127.0.0.1:2222', // dev default; override with --relay <url>
-    bandRows: 6, // status + room for a focused draft box (3) + a couple queue rows
+    webPort: 8787, // the relay's browser-door port — the CLI prints it in the room URL
     cmd: 'claude',
     hooks: true,
     guests: 'prompter', // default role for a newly admitted guest (spec default)
@@ -51,7 +57,7 @@ function parseArgs(argv) {
     if (a === '--no-relay') opts.relay = false;
     else if (a === '--relay') opts.relayUrl = argv[++i] ?? opts.relayUrl;
     else if (a === '--no-hooks') opts.hooks = false;
-    else if (a === '--band-rows') opts.bandRows = Math.max(2, Number(argv[++i]) || opts.bandRows);
+    else if (a === '--web-port') opts.webPort = Math.max(1, Number(argv[++i]) || opts.webPort);
     else if (a === '--cmd') opts.cmd = argv[++i];
     else if (a === '--guests') opts.guests = argv[++i] ?? opts.guests;
     else if (a === '--') {
@@ -95,11 +101,14 @@ function loadHostKey() {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const { stdin, stdout } = process;
-  // The band reserves AT LEAST this many rows and grows with content up to a cap
-  // (see bandHeight); --band-rows sets the floor. It is no longer a fixed reserve —
-  // the child PTY is resized each repaint so Claude's region matches the band.
-  const minBand = opts.bandRows;
-  const multiplayer = opts.relay; // the composer/gate is active only when sharing
+  // The terminal band is permanently exactly ONE status line, pinned to the bottom
+  // row. Claude gets every other row; the child PTY is resized to rows-1 each repaint.
+  const BAND_ROWS = 1;
+  const multiplayer = opts.relay; // the guest composer/gate + mirror are active only when sharing
+  // The host's browser tab authenticates with this token: it knocks with fingerprint
+  // `webhost:<token>`, and the brain auto-admits it as host (the one knock answered
+  // with no host already present). The token also goes in the room URL we print/copy.
+  const hostToken = randomBytes(16).toString('hex');
   // The current live Claude screen, cached so a joiner sees it instantly (finding 1).
   const snapshot = new ScreenSnapshot();
 
@@ -117,8 +126,8 @@ async function main() {
   const pointers = new Map(); // userId -> {x, y} normalized 0..1 (browser cursors)
   const claude = { state: 'idle' };
   let armed = false; // true only while a permission ask is pending (hook-armed)
-  let pendingKnocks = []; // FIFO of {id,name,fp,seen} awaiting the host's y/n
-  let endConfirm = 0; // /end confirmation stage: 0 none · 1 "end?" · 2 "save?"
+  let pendingKnocks = []; // FIFO of guest {id,name,fp,seen} awaiting the host tab's admit
+  let currentUrl = null; // the room URL (with host token) once a room is granted
   const ui = { toast: null, toastTimer: null };
   let relay = null;
   let exited = false;
@@ -149,7 +158,7 @@ async function main() {
 
   let pty;
   try {
-    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: minBand });
+    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: BAND_ROWS });
   } catch (err) {
     process.stderr.write(
       `claude-share: could not start "${opts.cmd}": ${err.message}\n` +
@@ -160,45 +169,27 @@ async function main() {
 
   const CLAUDE_STATUS = { busy: '✻ brewing…', idle: '● idle', ask: '⚠ permission ask pending' };
 
-  // ── band rendering ───────────────────────────────────────────────────────────
-  // The dynamic region: a pending knock wins (spec: knocks render in the band,
-  // never over Claude's output), otherwise a status/toast line then the draft
-  // boxes and the attributed queue. paint() clips to the reserved rows.
+  // ── band rendering (one status line) ─────────────────────────────────────────
+  // The engine-room band is a single line. Draft boxes, the queue, knock prompts —
+  // all of that moved to the browser (state.knocks / state.drafts). Transient
+  // messages fold into the claude-state slot; nothing ever grows past one row.
   const nameOf = (id) => state.nameOf(id) ?? knockInfo.get(id)?.name ?? id;
 
-  function bandDynamicLines(cols) {
-    const k = pendingKnocks[0];
-    if (k) return [knockLine(k, { cols })];
+  // The middle slot of the status line: a live toast wins (folded in temporarily),
+  // then pause, then Claude's hook-tracked state, then a plain live/connecting/solo.
+  const stateSlot = () => {
+    if (ui.toast) return ui.toast;
+    if (state.paused) return '⏸ paused';
+    if (hooks) return CLAUDE_STATUS[claude.state] ?? claude.state;
+    if (state.room) return 'live';
+    return relay ? 'connecting…' : 'solo';
+  };
 
-    const lines = [];
-    if (state.paused) lines.push('⏸ sharing paused — /resume to continue');
-    else if (ui.toast) lines.push(ui.toast);
-    else if (hooks) lines.push(CLAUDE_STATUS[claude.state] ?? claude.state);
-    else if (state.room) lines.push(`room live · ${state.guests().length} watching`);
-    else lines.push(relay ? 'connecting to relay…' : 'solo session · band is a placeholder');
-
-    if (multiplayer) {
-      const hostBoxId = drafts.activeBox(HOST_ID)?.id;
-      for (const b of drafts.snapshot().boxes) {
-        const authors = b.authors.map(nameOf);
-        // Each participant's live cursor, tagged by display name — the wow beat.
-        const cursors = Object.entries(b.caretOffsets).map(([uid, offset]) => ({ name: nameOf(uid), offset }));
-        lines.push(...draftBox({ text: b.text, authors, cursors }, { cols, focused: b.id === hostBoxId }));
-      }
-      const qitems = queue.items.map((it) => ({ author: nameOf(it.author), text: it.text }));
-      lines.push(...queueBlock(qitems, { cols }));
-    }
-    return lines;
-  }
-
-  const bandState = (cols, rows, band, lines) => ({
-    cols,
-    rows,
-    bandRows: band,
+  const statusFields = () => ({
     room: state.room,
-    participants: state.list().map((p) => ({ name: p.name, role: p.role })),
-    mode: state.mode,
-    lines,
+    people: state.list().length,
+    claudeState: stateSlot(),
+    url: currentUrl,
   });
 
   // The coordinate space the band paints into. In a shared session it is the CLAMPED
@@ -271,18 +262,13 @@ async function main() {
   let lastPaintRows = null;
   let pendingClearBelow = false;
 
-  // The band is part of the ONE live screen (spec §how-a-session-works): the same
-  // painted band goes to the host's stdout and, mirrored, to every eligible guest —
-  // so everyone sees the draft boxes/cursors, the attributed queue, the status line,
-  // knocks, and every event toast (joins/leaves/kicks, the mode-change warning, recap
-  // notices). Its height is computed from content each repaint and Claude's region is
-  // resized to match, so the band can never overflow past the bottom (finding 2).
+  // The band is one status line, pinned to the bottom row of the (clamped) shared
+  // view. The same painted line goes to the host's stdout and, mirrored, to every
+  // eligible ssh guest; browser tabs render their own overlay from state instead.
+  // Claude's region is resized to rows-1 so the line can never overlap its output.
   const repaintBand = () => {
     const { cols, rows } = viewSize();
-    const dyn = bandDynamicLines(cols);
-    // status line + dynamic lines → the reserved height (capped; overflow becomes
-    // a "+N more" line inside paint()).
-    const band = bandHeight(1 + dyn.length, rows, { min: minBand });
+    const band = BAND_ROWS;
 
     // Keep Claude's region to exactly the rows the band does not occupy, at the
     // shared width — resize the child only when that actually changes.
@@ -295,7 +281,7 @@ async function main() {
       } catch {}
     }
 
-    let painted = paint(bandState(cols, rows, band, dyn));
+    let painted = paint({ cols, rows, bandRows: band, ...statusFields() });
     // Ghost-band cleanup: when the shared clamp SHRINKS, rows below the new region
     // keep stale band paint on any terminal taller than the new clamp. Erase below
     // the region BEFORE repainting (order matters: on a terminal exactly `rows`
@@ -476,7 +462,7 @@ async function main() {
         runRecap(by);
         break;
       case 'end':
-        beginEnd();
+        endSession();
         break;
     }
     repaintBand();
@@ -497,37 +483,17 @@ async function main() {
     });
   }
 
-  // /end — two confirmations, answered by the host's y/n (see the stdin handler).
-  function beginEnd() {
-    endConfirm = 1;
-    showToast('end session? everyone will be disconnected (y/n)', 30000);
-  }
-  function handleEndConfirm(d) {
-    const s = d.toString('utf8');
-    const yes = s === 'y' || s === 'Y';
-    const no = s === 'n' || s === 'N';
-    if (endConfirm === 1) {
-      if (yes) {
-        endConfirm = 2;
-        showToast('save a session summary to session.md? (y/n)', 30000);
-      } else if (no) {
-        endConfirm = 0;
-        showToast('end cancelled');
-      }
-      return;
-    }
-    if (endConfirm === 2) {
-      if (yes) {
-        try {
-          log.write(path.join(process.cwd(), 'session.md'));
-        } catch {}
-      }
-      if (yes || no) {
-        endConfirm = 0;
-        relay?.end();
-        cleanup(0);
-      }
-    }
+  // /end — end the room now. The two-step "end? / save?" confirmation is a browser-UI
+  // concern (the host tab gates it and fires a single /end); the terminal has no y/n
+  // path anymore. We write the attributed session.md then disconnect everyone —
+  // defaulting to save preserves the record, since the browser doesn't yet signal a
+  // no-save choice (spec §host controls: the log is kept in memory either way).
+  function endSession() {
+    try {
+      log.write(path.join(process.cwd(), 'session.md'));
+    } catch {}
+    relay?.end();
+    cleanup(0);
   }
 
   // Free a guest's seat and purge their footprint — draft boxes, queued items, any
@@ -577,10 +543,10 @@ async function main() {
     }
   };
 
-  // ── relay client (Task 5 transport, Task 7 brain) ────────────────────────────
-  // Resolve a specific pending knock by id. The host terminal answers the head of
-  // the FIFO with y/n; the browser (via a {t:'ui'} button) admits a chosen knock,
-  // since state.knocks shows them all (spec verdict: the host admits from the browser).
+  // ── relay client ─────────────────────────────────────────────────────────────
+  // Resolve a specific pending knock by id. Answered ONLY from the host's browser tab
+  // (a {t:'ui'} admit/deny button); state.knocks shows the host all pending knocks.
+  // The terminal has no y/n knock path anymore (post-dogfood verdict).
   const answerKnockById = (knockId, admitYes) => {
     const idx = pendingKnocks.findIndex((k) => k.id === knockId);
     if (idx === -1 || !relay) return;
@@ -591,9 +557,6 @@ async function main() {
       showToast(`declined ${knock.name}`);
     }
     repaintBand();
-  };
-  const answerKnock = (admitYes) => {
-    if (pendingKnocks[0]) answerKnockById(pendingKnocks[0].id, admitYes);
   };
 
   // A browser button command from guest `id`, executed AS that sender so the role
@@ -611,9 +574,10 @@ async function main() {
     if (action.kind === 'command') routeSend(id, { text: String(action.text) });
   };
 
-  const { host: RELAY_HOST, port: RELAY_PORT } = parseRelayUrl(opts.relayUrl);
-  const inviteFor = (code) =>
-    RELAY_PORT === 22 ? `ssh ${code}@${RELAY_HOST}` : `ssh -p ${RELAY_PORT} ${code}@${RELAY_HOST}`;
+  const { host: RELAY_HOST } = parseRelayUrl(opts.relayUrl);
+  // The room URL the host opens in a browser tab (and shares with guests). The `host`
+  // token turns this into the host tab; guests visit the same URL without it.
+  const roomUrl = (code) => `http://${RELAY_HOST}:${opts.webPort}/${code}?host=${hostToken}`;
   // One stateful chatter partitioner per guest (split sequences carry per stream).
   const guestPartitioners = new Map();
   const guestPartitioner = (id) => {
@@ -630,18 +594,21 @@ async function main() {
       reconnectAttempts = 0;
       const reclaimed = state.room === code; // we already held this exact code → reclaim
       state.setRoom(code);
+      currentUrl = roomUrl(code); // pin the URL into the status line
       if (reclaimed) showToast('reconnected — room reclaimed', 6000);
       else {
-        const invite = inviteFor(code);
-        // Best-effort clipboard copy (spec: invite on the clipboard before
-        // Claude finishes booting). macOS only for now; silent on failure.
+        // Best-effort clipboard copy (spec: the invite is on the clipboard before
+        // Claude finishes booting) — now the room URL, not the ssh invite. macOS
+        // only for now; guarded by CLAUDE_SHARE_NO_CLIPBOARD; silent on failure.
         if (process.platform === 'darwin' && !process.env.CLAUDE_SHARE_NO_CLIPBOARD) {
           try {
             const pb = execFile('pbcopy');
-            pb.stdin.end(invite);
+            pb.stdin.end(currentUrl);
           } catch {}
         }
-        showToast(`room ready · invite copied: ${invite}`, 15000);
+        // The URL lives permanently in the status line's URL slot; the toast is just
+        // the transient "copied" confirmation (folded into the same one line).
+        showToast('room ready · link copied to clipboard', 15000);
       }
     });
     r.onGone(() => {
@@ -651,6 +618,15 @@ async function main() {
       showToast('the room expired while disconnected — continuing solo', 8000);
     });
     r.onKnock((knock) => {
+      // The host's own browser tab knocks with fp `webhost:<token>`. Auto-admit it as
+      // host — it is the one knock answered with no host tab present yet, and it is
+      // how the host gets in to answer everyone else's knocks. It never shows up as a
+      // pending knock the host has to admit.
+      if (knock.fp === `webhost:${hostToken}`) {
+        knockInfo.set(knock.id, { name: knock.name, fp: knock.fp, role: 'host' });
+        r.admit(knock.id);
+        return;
+      }
       knockInfo.set(knock.id, { name: knock.name, fp: knock.fp });
       pendingKnocks.push(knock);
       repaintBand();
@@ -658,8 +634,9 @@ async function main() {
     r.onJoin((id) => {
       const info = knockInfo.get(id) ?? { name: 'guest', fp: null };
       // addGuest restores the role a returning fingerprint last held this session
-      // (spec §identity); a new/keyless guest takes the room default (opts.guests).
-      const g = state.addGuest(id, { name: info.name, fp: info.fp, role: opts.guests });
+      // (spec §identity). The host's browser tab carries role 'host' (set at knock
+      // time); a new/keyless guest takes the room default (opts.guests).
+      const g = state.addGuest(id, { name: info.name, fp: info.fp, role: info.role ?? opts.guests });
       log.event(`${g.name} joined as ${g.role}`);
       // The join context card lands in the guest's own scrollback before the
       // live mirror attaches (spec §join context card).
@@ -865,30 +842,19 @@ async function main() {
   });
   pty.onExit(({ exitCode }) => cleanup(exitCode ?? 0));
 
-  // ── host stdin ──────────────────────────────────────────────────────────────
+  // ── host stdin — STRAIGHT THROUGH to Claude ──────────────────────────────────
+  // The terminal is the engine room: the host drives Claude exactly as solo. There
+  // is no composer, no gate, and no knock/end y/n on host input anymore — all
+  // multiplayer moves happen in the host's browser tab. We still run the chatter
+  // partitioner (terminal DA/version replies + mouse reports are the terminal
+  // answering Claude); both halves flow to the PTY, so Claude sees every byte.
   if (stdin.isTTY) stdin.setRawMode(true);
   stdin.resume();
   const partitionHostInput = createPartitioner();
   stdin.on('data', (d) => {
-    // Terminal chatter first: DA/version replies and mouse reports are the
-    // terminal answering Claude, not the human typing — they belong to the PTY,
-    // never to the composer (they render as "[<35;34;4M" garbage in drafts).
     const { chatter, human } = partitionHostInput(d);
     if (chatter) pty.write(Buffer.from(chatter, 'binary'));
-    if (!human) return;
-    const d2 = Buffer.from(human, 'binary');
-    // Modal host interactions intercept a lone y/n first: an /end confirmation,
-    // then a knocking guest. Neither is forwarded to Claude.
-    if (endConfirm) return handleEndConfirm(d2);
-    if (relay && pendingKnocks.length) {
-      const s = d2.toString('utf8');
-      if (s === 'y' || s === 'Y') return answerKnock(true);
-      if (s === 'n' || s === 'N') return answerKnock(false);
-    }
-    // Sharing: the host composes through the same gate as everyone. Solo: the host
-    // drives Claude directly (the composer is a sharing tool).
-    if (multiplayer) applyInput(HOST_ID, dispatch(HOST_ID, 'host', d2, { armed, toasted }));
-    else pty.write(d2);
+    if (human) pty.write(Buffer.from(human, 'binary'));
   });
 
   process.on('SIGWINCH', () => {
