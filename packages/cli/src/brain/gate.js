@@ -74,7 +74,7 @@ export function dispatch(userId, role, bytes, ctx = {}) {
   // an ask is up, a lone y/n is ordinary draft input for everyone — the host too — so
   // "yes, ship it" typed while composing is never leaked to Claude as a bare
   // keystroke (spec §fail-closed: y/n is a permission answer, not a stray draft char).
-  if (/^[yn]$/i.test(s) && armed && atLeast(role, 'driver')) {
+  if (/^[yn]$/i.test(s) && armed && atLeast(role, 'driver') && !ctx.composing) {
     return { kind: 'pty', data: s };
   }
 

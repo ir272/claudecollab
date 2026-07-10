@@ -115,6 +115,7 @@ function isUiAction(a) {
   if (a.kind === 'deldraft') return isStr(a.id); // delete a whole draft box
   if (a.kind === 'place') return isStr(a.id) && (a.home === true || (isNum(a.x) && isNum(a.y))); // move/resize a draft (shared)
   if (a.kind === 'unqueue') return isNum(a.n); // pull a queued prompt back into a draft
+  if (a.kind === 'resync') return true; // host: force claude-state idle (missed hook)
   return false;
 }
 

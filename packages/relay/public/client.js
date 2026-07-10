@@ -405,6 +405,7 @@ function main() {
   let mirrorSized = false;
   let pendingFrames = [];
   let lastViewKey = '';
+  let retuneTries = 0; // bounded font-retune attempts while xterm re-measures
   // Direct mode is DERIVED, not toggled: a driver with no draft focused types
   // straight into Claude. Updated from every state frame.
   let directOn = false;
@@ -482,9 +483,9 @@ function main() {
     'host-gone': 'The host is offline right now. Try again in a moment.',
     banned: 'You were removed from this room.',
     lockout: 'Too many attempts. Wait a bit and try again.',
-    timeout: 'The host did not answer in time. Knock again when ready.',
-    denied: 'The host declined this knock.',
-    closed: 'The connection closed before you were let in — knock again.',
+    timeout: 'The host did not answer in time. Try again when they are around.',
+    denied: 'The host declined your request.',
+    closed: 'The connection closed before you were let in — try again.',
   };
 
   function beginKnock() {
@@ -503,30 +504,45 @@ function main() {
 
   // ── connection ───────────────────────────────────────────────────────────────
   function connect({ code, name, token, hostToken }) {
+    // Supersede any previous socket COMPLETELY. A zombie from an earlier attempt
+    // still has live handlers — when the brain dedupes its knock, its deny/close
+    // would splash "declined" into a UI that belongs to the NEW attempt.
+    const old = ws;
+    if (old) {
+      old.onmessage = old.onclose = old.onerror = null;
+      try {
+        old.close();
+      } catch {}
+    }
     phase = 'knocking';
     joinForm.hidden = true;
     waiting.hidden = false;
     $('#waiting-text').textContent = hostToken
       ? 'Opening your room…'
-      : `Knocking — waiting for the host to let you in…`;
+      : `Waiting for the host to let you in…`;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = proto + '//' + location.host + buildWsPath({ code, name, token, hostToken });
+    let sock;
     try {
-      ws = new WebSocket(url);
+      sock = new WebSocket(url);
     } catch {
       return fail('no-room');
     }
-    ws.binaryType = 'arraybuffer';
-    ws.onopen = () => {}; // nothing to send until admitted
-    ws.onmessage = onMessage;
-    ws.onclose = () => {
-      if (intentionalClose) return;
+    ws = sock;
+    sock.binaryType = 'arraybuffer';
+    sock.onopen = () => {}; // nothing to send until admitted
+    sock.onmessage = (ev) => {
+      if (sock !== ws) return; // superseded mid-flight
+      onMessage(ev);
+    };
+    sock.onclose = () => {
+      if (sock !== ws || intentionalClose) return;
       if (phase === 'live') showDisconnected();
       // A silent close mid-knock is NOT evidence the host is offline (a superseded
       // knock or a network blip closes the same way) — never claim that it is.
       else if (phase !== 'error') fail('closed');
     };
-    ws.onerror = () => {};
+    sock.onerror = () => {};
   }
 
   function onMessage(ev) {
@@ -696,6 +712,7 @@ function main() {
       mirrorSized = true; // no view field (older host) → degrade: just start writing
       for (const chunk of pendingFrames) term.write(chunk);
       pendingFrames = [];
+      setTimeout(scaleTerm, 350); // warm-up: re-fit once the first paint has settled
     }
     scaleTerm();
   }
@@ -714,15 +731,19 @@ function main() {
     if (w < 2 || h < 2) return;
     const rect = stage.getBoundingClientRect();
     const fit = Math.min((rect.width - 24) / w, (rect.height - 20) / h);
-    // Retarget the font while the ideal size is meaningfully away from current —
-    // the renderer re-measures async, so the next frame's residual scale settles it.
+    // Retarget the font while the ideal size is meaningfully away from current.
+    // xterm re-measures ASYNCHRONOUSLY after a font change — a rAF often reads the
+    // stale size (the "doesn't span until the first message" bug), so retry on a
+    // timer until the measurement settles, bounded so it can never loop.
     const cur = term.options.fontSize || 13;
     const ideal = Math.max(9, Math.min(28, Math.floor(cur * fit)));
-    if (ideal !== cur && Math.abs(ideal - cur) >= 1 && Number.isFinite(fit) && fit > 0) {
+    if (ideal !== cur && retuneTries < 6 && Number.isFinite(fit) && fit > 0) {
+      retuneTries += 1;
       term.options.fontSize = ideal;
-      requestAnimationFrame(scaleTerm);
+      setTimeout(scaleTerm, 90);
       return;
     }
+    retuneTries = 0;
     const k = Math.min(fit, 1);
     termEl.style.width = w + 'px';
     termEl.style.height = h + 'px';
@@ -927,9 +948,10 @@ function main() {
   function render() {
     if (!lastState) return;
     const v = overlayView(lastState, selfId);
-    // Direct is derived: a driver with no draft focused types straight into Claude.
+    // Direct is derived: anyone who can prompt, with no draft focused, types
+    // straight into Claude (asks and mode flips stay driver-gated in the brain).
     const selfComposing = v.drafts.some((d) => d.focusedBySelf);
-    directOn = v.canDrive && !selfComposing;
+    directOn = v.canCompose && !selfComposing;
     directBtn.hidden = !directOn; // a passive "keys go into Claude" indicator
     // Composing → the key catcher must hold focus, so typing lands in the draft
     // without a manual click (unless a drag-selection is standing).
@@ -978,6 +1000,10 @@ function main() {
   function renderClaudeChip(v) {
     claudeChip.className = 'chip claude ' + v.claude.kind;
     claudeChip.textContent = v.claude.text;
+    // The host's unstick: a missed hook can wedge busy/ask — click forces idle.
+    claudeChip.style.cursor = v.isHost ? 'pointer' : 'default';
+    claudeChip.title = v.isHost ? 'stuck? click to reset to idle and drain the queue' : '';
+    claudeChip.onclick = v.isHost ? () => sendMsg({ t: 'ui', action: { kind: 'resync' } }) : null;
   }
 
   // Once, when the room first has two people who can type: say how composing works
@@ -1323,7 +1349,7 @@ function main() {
         const chip = el('span', 'knock-chip');
         chip.append('🚪 ');
         chip.append(el('span', 'kname', k.name));
-        chip.append(el('span', null, ' is knocking'));
+        chip.append(el('span', null, ' wants to join'));
         chip.append(el('span', 'kmeta', k.seenLabel));
         const admit = el('button', 'kbtn yes', 'Admit');
         const deny = el('button', 'kbtn no', 'Deny');

@@ -350,12 +350,12 @@ async function main() {
     repaintBand();
   };
 
-  // The throttled "your typing went nowhere" nudge (explicit draft creation only).
-  const nudge = (userId) => {
+  // The throttled "your typing went nowhere" nudge (default: explicit-draft copy).
+  const nudge = (userId, msg = 'no draft focused — hit + draft (or double-click the terminal) to compose') => {
     const now = Date.now();
     if (now - (nudgedAt.get(userId) ?? 0) < 8000) return;
     nudgedAt.set(userId, now);
-    notify(userId, 'no draft focused — hit + draft (or double-click the terminal) to compose');
+    notify(userId, msg);
   };
 
   // A message meant for one participant: an addressed state.notice (browser tabs
@@ -777,6 +777,19 @@ async function main() {
       if (drafts.deleteBox(action.id)) repaintBand();
       return;
     }
+    // The host's escape hatch for a wedged state machine: if a hook was missed
+    // (observed once after declining a permission ask), the room sticks 'busy' and
+    // the queue holds forever. Clicking the state chip forces idle and drains.
+    if (action.kind === 'resync') {
+      if (!atLeast(role, 'host')) return;
+      claude.state = 'idle';
+      armed = false;
+      log.event('host resynced claude state to idle');
+      showToast('state resynced to idle');
+      pump();
+      repaintBand();
+      return;
+    }
     if (action.kind === 'command') routeSend(id, { text: String(action.text) });
   };
 
@@ -873,11 +886,19 @@ async function main() {
       const actor = actorOf(id); // a host tab drives Claude AS the host (finding 4)
       const role = state.roleOf(actor) ?? 'viewer';
       const composing = drafts.activeBox(actor) !== null;
-      // A driver with no draft focused is AT the terminal: keys go raw to Claude
-      // (the page behaves like a plain terminal by default; composing is opt-in).
-      // Two keys stay ours even then: Ctrl+C (an ssh guest's "leave the room") and
-      // Ctrl+N (the + draft chip — it must reach the draft engine, not Claude).
-      if (!composing && atLeast(role, 'driver') && human !== '\x03' && human !== '\x0e') {
+      // Anyone who can prompt and has no draft focused is AT the terminal: keys go
+      // raw to Claude (composing is opt-in). Two keys stay ours even then: Ctrl+C
+      // (an ssh guest's "leave the room") and Ctrl+N (the + draft chip). The
+      // driver-only powers survive the open door: a prompter can't flip permission
+      // modes, and while an ask is pending their typing pauses (Esc still passes —
+      // anyone who can prompt can interrupt).
+      if (!composing && atLeast(role, 'prompter') && human !== '\x03' && human !== '\x0e') {
+        if (!atLeast(role, 'driver')) {
+          if (human === '\x1b[Z') return; // Shift+Tab mode flip: driver+
+          if (claude.state === 'ask' && human !== '\x1b') {
+            return nudge(actor, 'a permission ask is pending — only a driver or the host can answer');
+          }
+        }
         return pty.write(human);
       }
       applyInput(actor, dispatch(actor, role, Buffer.from(human, 'binary'), { armed, toasted, composing }));

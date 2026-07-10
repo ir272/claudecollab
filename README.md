@@ -23,7 +23,7 @@ When your room is ready, the status line shows **your** link and the invite is c
 | Link | Looks like | Who it's for |
 |---|---|---|
 | **your host link** | `…/brave-otter?host=abc123` | **you only.** Opening it makes you the host — you can admit, kick, set roles, pause, end. It stays on your status line. |
-| **the invite link** | `…/brave-otter` | **share this one.** A friend who opens it lands on the normal knock-to-join flow. This is what gets copied to your clipboard. |
+| **the invite link** | `…/brave-otter` | **share this one.** A friend who opens it lands on the normal request-to-join flow. This is what gets copied to your clipboard. |
 
 > ⚠️ **Never paste your host link to a friend.** Anyone who opens a link with `?host=…` becomes a host of your room. Share the plain invite link (no `?host=`) — that's the one on your clipboard, and the "Copy invite link" button in your host tab always gives you the safe one.
 
@@ -67,7 +67,7 @@ node packages/cli/bin/claude-share.js --relay ssh://127.0.0.1:2222
 
 Watch the bottom status line. It shows a link like `http://127.0.0.1:8787/brave-otter?host=…` — that's **your host link**. Open it in a browser: you're now in your host tab.
 
-**3. Invite a friend** — the plain **invite link** (`http://127.0.0.1:8787/brave-otter`, no `?host=`) is on your clipboard, and the **Copy invite link** button in your host tab always hands you the safe one. Open it in another browser tab (or send it): pick a name, knock, and **Admit** them from your host tab. They now see your Claude, live.
+**3. Invite a friend** — the plain **invite link** (`http://127.0.0.1:8787/brave-otter`, no `?host=`) is on your clipboard, and the **Copy invite link** button in your host tab always hands you the safe one. Open it in another browser tab (or send it): pick a name, request to join, and **Admit** them from your host tab. They now see your Claude, live.
 
 > No `claude` installed? Point the host at any command with `--cmd`, e.g. a stub. (Hook-based state detection only turns on for the real `claude`.)
 >
@@ -92,7 +92,7 @@ Host controls (buttons in your tab, or `/`-commands): set a role · kick · paus
 
 The whole page is the terminal. Drafts are small glass boxes **floating on top of it** — make one with the **+ draft** chip (or double-click an empty spot, and it spawns right there). Each draft is author-tagged, and everyone's live caret shows up in it — two named carets writing one prompt together. **Enter** sends the box your caret is in; click into someone else's box to co-write it; **Esc** steps out; drag the ⠿ bar to move it, the ◢ corner to resize, ✕ deletes. Standard editing keys work inside (shift+enter newline, word-jump, kill-line, ⌘⌫, drag-select).
 
-A **driver or the host** with no draft focused types **straight into Claude** — arrows and Enter drive Claude's own menus (`/model`, permission asks) exactly like sitting at the terminal. The ⌨ chip glows while your keys go raw.
+Anyone who can prompt, with no draft focused, types **straight into Claude** — arrows and Enter drive Claude's own menus (`/model`) exactly like sitting at the terminal. The ⌨ chip glows while your keys go raw. Permission asks and mode flips stay **driver/host** territory: a prompter's typing pauses while an ask is pending (Esc still interrupts).
 
 When Claude is busy, sent drafts wait in an attributed queue — the **queue n** chip in the header opens it (edit/delete your own; a driver or the host can delete any).
 
@@ -129,7 +129,7 @@ test/e2e.test.js   — the whole system on localhost: host + host tab + ssh gues
 test/roster-id.test.js — the host tab targets duplicate-named guests by id, end to end
 ```
 
-**The terminal is the engine room.** Claude gets a PTY one row shorter than your real terminal, so its cursor can never touch the bottom row — that's where claude-share paints its single status line. Everything multiplayer (draft boxes, the queue, knocks, roles) lives in your browser tab, not the terminal.
+**The terminal is the engine room.** Claude gets a PTY one row shorter than your real terminal, so its cursor can never touch the bottom row — that's where claude-share paints its single status line. Everything multiplayer (draft boxes, the queue, join requests, roles) lives in your browser tab, not the terminal.
 
 **How state is known:** claude-share injects Claude Code hooks (`UserPromptSubmit`, `Stop`, `Notification`, `PostToolUse`) that post to a local socket. That's how it knows Claude is busy, idle, or waiting on a permission ask — no guessing from pixels. If a signal is ever ambiguous, it fails closed: the queue won't drain and only a driver or the host answers.
 
