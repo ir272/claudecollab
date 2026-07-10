@@ -316,6 +316,8 @@ export function overlayView(state, selfId) {
     claude: claudeLabel(s.claudeState),
     paused: !!s.paused,
     knocks,
+    // The latest addressed notice ({id, msg, seq}) — shown as a toast when it's mine.
+    notice: s.notice && typeof s.notice === 'object' ? s.notice : null,
   };
 }
 
@@ -403,6 +405,7 @@ function main() {
   const endConfirm = $('#end-confirm');
   const sbRoom = $('#sb-room');
   const sbRole = $('#sb-role');
+  const toastEl = $('#toast');
 
   // ── join screen ──────────────────────────────────────────────────────────────
   function showJoin() {
@@ -754,6 +757,23 @@ function main() {
     renderComposer(v);
     renderCursors(v);
     renderHeader(v);
+    renderNotice(v);
+  }
+
+  // An addressed notice from the brain ("you can't use slash commands — …"): show
+  // it as a toast pill when it's for me and I haven't shown that seq yet.
+  let noticeSeq = 0;
+  let noticeTimer = null;
+  function renderNotice(v) {
+    const n = v.notice;
+    if (!n || n.id !== selfId || n.seq === noticeSeq) return;
+    noticeSeq = n.seq;
+    toastEl.textContent = n.msg;
+    toastEl.hidden = false;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      toastEl.hidden = true;
+    }, 4000);
   }
 
   function renderStatusbar(v) {

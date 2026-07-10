@@ -135,7 +135,7 @@ async function main() {
   let pendingKnocks = []; // FIFO of guest {id,name,fp,seen} awaiting the host tab's admit
   let currentUrl = null; // the host-tab URL (WITH host token) — host's own terminal only
   let inviteUrlStr = null; // the token-free invite URL — safe to show guests in the mirror
-  const ui = { toast: null, toastTimer: null };
+  const ui = { toast: null, toastTimer: null, notice: null, noticeSeq: 0 };
   let relay = null;
   let exited = false;
   // Reconnect-with-reclaim state (spec §failure-behavior: the relay holds the code
@@ -251,6 +251,10 @@ async function main() {
         .map(([id, p]) => [id, { x: p.x, y: p.y, name: nameOf(id), color: state.colorOf(id) }]),
     ),
     knocks: pendingKnocks.map((k) => ({ id: k.id, name: k.name, fp: k.fp, seen: k.seen })),
+    // The latest per-user notice, addressed by id. Browser tabs show it as a toast
+    // when it's theirs; injecting bytes into the mirror (the ssh-guest channel) is
+    // invisible there because Claude's TUI repaints right over them.
+    notice: ui.notice,
   });
 
   // Emit at most one state frame per 50ms: fire immediately when outside the window,
@@ -338,11 +342,13 @@ async function main() {
     repaintBand();
   };
 
-  // A message meant for one participant: mail it to a guest, and surface it in the
+  // A message meant for one participant: mail it to a guest (bytes for an ssh
+  // terminal, an addressed state.notice for browser tabs), and surface it in the
   // host's band too so moderation stays visible.
   const notify = (userId, msg) => {
     if (userId && userId !== HOST_ID) relay?.sendTo(userId, `\r\n${msg}\r\n`);
-    showToast(msg);
+    ui.notice = { id: userId, msg, seq: ++ui.noticeSeq };
+    showToast(msg); // repaints the band, which also schedules a state emit
   };
 
   // Post prose to the SHARED screen — the host's stdout and every live guest's
@@ -389,6 +395,18 @@ async function main() {
     log.prompt(nameOf(userId), text);
     if (!hooks) {
       pty.write(text + '\r'); // no state tracking → send immediately
+      return;
+    }
+    // Claude slash commands and ! bash never fire hooks, so a busy→idle round trip
+    // can't confirm them. Queueing one flips the room 'busy' forever and wedges the
+    // queue (dogfood: /model froze the room). Fire them only while Claude is
+    // known-idle, and leave the state alone — no hook will ever clear it.
+    if (cls.kind === 'claude-slash' || cls.kind === 'bash') {
+      if (claude.state !== 'idle') {
+        notify(userId, `Claude is ${claude.state} — slash and bash fire only while it's idle`);
+        return;
+      }
+      pty.write(text + '\r');
       return;
     }
     queue.enqueue(text, userId);
