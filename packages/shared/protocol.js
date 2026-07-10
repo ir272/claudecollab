@@ -112,6 +112,8 @@ function isUiAction(a) {
   if (a.kind === 'command') return isStr(a.text);
   if (a.kind === 'caret') return isStr(a.id) && isNum(a.offset); // click into a draft
   if (a.kind === 'delrange') return isStr(a.id) && isNum(a.start) && isNum(a.end); // delete a selection
+  if (a.kind === 'deldraft') return isStr(a.id); // delete a whole draft box
+  if (a.kind === 'direct') return typeof a.on === 'boolean'; // raw-keys-to-Claude mode
   return false;
 }
 

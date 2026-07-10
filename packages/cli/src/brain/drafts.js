@@ -270,6 +270,14 @@ export class Drafts {
     return { changed: true };
   }
 
+  /** Delete a whole draft box (the ✕ on a draft), cursors and all. */
+  deleteBox(boxId) {
+    const box = this.#boxById(boxId);
+    if (!box) return false;
+    this.boxes = this.boxes.filter((b) => b !== box);
+    return true;
+  }
+
   /** A user left the room: drop their cursor and prune the draft if it's now empty. */
   removeUser(userId) {
     const box = this.activeBox(userId);

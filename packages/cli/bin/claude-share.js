@@ -136,6 +136,10 @@ async function main() {
   let currentUrl = null; // the host-tab URL (WITH host token) — host's own terminal only
   let inviteUrlStr = null; // the token-free invite URL — safe to show guests in the mirror
   const ui = { toast: null, toastTimer: null, notice: null, noticeSeq: 0 };
+  // Participants whose keys currently bypass the draft pad and go raw to Claude
+  // (the browser "click the terminal to type into Claude" mode). Driver+ only;
+  // membership is re-checked on every key, so a demotion takes effect instantly.
+  const directInput = new Set();
   let relay = null;
   let exited = false;
   // Reconnect-with-reclaim state (spec §failure-behavior: the relay holds the code
@@ -260,6 +264,7 @@ async function main() {
     // or wide frames wrap into garbage; a tab's own container size is only its
     // CAPACITY, reported via resize and folded into this clamp.
     view: viewSize(),
+    direct: [...directInput],
   });
 
   // Emit at most one state frame per 50ms: fire immediately when outside the window,
@@ -450,6 +455,7 @@ async function main() {
     queue.removeByAuthor(targetId);
     knockInfo.delete(targetId);
     pointers.delete(targetId);
+    directInput.delete(targetId);
     recomputeClamp();
     const msg = `${name} was kicked`;
     log.event(msg);
@@ -585,6 +591,7 @@ async function main() {
     pendingKnocks = pendingKnocks.filter((k) => k.id !== id);
     knockInfo.delete(id);
     pointers.delete(id);
+    directInput.delete(id);
     recomputeClamp(); // repaints + refreshes the roster/count either way
     // Only announce a departure for someone who actually joined — a superseded pending
     // knock (deduped reconnect / timeout) or a closing host tab never "left" (finding 3).
@@ -728,6 +735,25 @@ async function main() {
       if (drafts.deleteRange(id, action.id, action.start, action.end)) repaintBand();
       return;
     }
+    // The ✕ on a draft box: authors delete their own; a driver or the host, any.
+    if (action.kind === 'deldraft') {
+      if (!atLeast(role, 'prompter')) return;
+      const box = drafts.boxes.find((b) => b.id === action.id);
+      if (!box) return;
+      const mine = box.authors.has(id) || box.cursors.has(id);
+      if (!mine && !atLeast(role, 'driver')) return notify(id, "you can only delete a draft you're part of");
+      if (drafts.deleteBox(action.id)) repaintBand();
+      return;
+    }
+    // Direct terminal input: this tab's keys go raw to Claude (arrows/enter/esc in a
+    // native picker) until toggled off. Driving Claude's own UI is driver territory.
+    if (action.kind === 'direct') {
+      if (!atLeast(role, 'driver')) return notify(id, 'typing into Claude directly needs a driver role');
+      if (action.on) directInput.add(id);
+      else directInput.delete(id);
+      repaintBand();
+      return;
+    }
     if (action.kind === 'command') routeSend(id, { text: String(action.text) });
   };
 
@@ -823,6 +849,13 @@ async function main() {
       if (!human) return;
       const actor = actorOf(id); // a host tab drives Claude AS the host (finding 4)
       const role = state.roleOf(actor) ?? 'viewer';
+      // Direct mode: this participant's keys go raw to Claude (they clicked the
+      // terminal to drive a native picker). Role re-checked per key — a demotion
+      // ends the mode on the spot.
+      if (directInput.has(actor)) {
+        if (atLeast(role, 'driver')) return pty.write(human);
+        directInput.delete(actor);
+      }
       applyInput(actor, dispatch(actor, role, Buffer.from(human, 'binary'), { armed, toasted }));
     });
     r.onPointer(({ id, x, y }) => {

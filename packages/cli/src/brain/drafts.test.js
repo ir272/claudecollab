@@ -639,3 +639,15 @@ test('deleteRange takes a partially covered paste token out whole', () => {
   assert.equal(box.text, 'ab');
   assert.equal(d.cursorOf('ian').pos, 1);
 });
+
+test('deleteBox removes a whole draft, cursors and all', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'doomed');
+  const id = d.activeBox('ian').id;
+  d.focus('james', id);
+  assert.equal(d.deleteBox(id), true);
+  assert.equal(d.boxes.length, 0);
+  assert.equal(d.activeBox('ian'), null);
+  assert.equal(d.activeBox('james'), null);
+  assert.equal(d.deleteBox('nope'), false);
+});

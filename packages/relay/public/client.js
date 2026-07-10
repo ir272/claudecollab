@@ -335,6 +335,8 @@ export function overlayView(state, selfId) {
     // The shared clamp every mirrored frame is painted at; the xterm mirror must
     // be exactly this size (null on an older host → fall back to local fitting).
     view: s.view && typeof s.view === 'object' ? s.view : null,
+    // Participants in direct-input mode (their keys go raw to Claude).
+    direct: Array.isArray(s.direct) ? s.direct : [],
   };
 }
 
@@ -394,6 +396,9 @@ function main() {
   let mirrorSized = false;
   let pendingFrames = [];
   let lastViewKey = '';
+  // Direct-input mode: my keys bypass the drafts and go raw to Claude (brain-owned;
+  // this mirrors the last state so key handlers don't need to re-derive it).
+  let directOn = false;
 
   // ── DOM handles ──────────────────────────────────────────────────────────────
   const joinScreen = $('#join');
@@ -426,6 +431,7 @@ function main() {
   const sbRoom = $('#sb-room');
   const sbRole = $('#sb-role');
   const toastEl = $('#toast');
+  const directBtn = $('#direct-btn');
 
   // ── join screen ──────────────────────────────────────────────────────────────
   function showJoin() {
@@ -584,8 +590,11 @@ function main() {
       fontSize: 13,
       lineHeight: 1.1,
       scrollback: 5000,
+      // Transparent over the stage glass: the mirror has no visible edge of its
+      // own, so a mirror narrower than the tab never reads as an empty side panel.
+      allowTransparency: true,
       theme: {
-        background: '#0a0c12',
+        background: 'rgba(0,0,0,0)',
         foreground: '#e8ecf4',
         cursor: '#e8a33d',
         selectionBackground: 'rgba(232,163,61,0.28)',
@@ -668,6 +677,8 @@ function main() {
     termEl.style.width = w + 'px';
     termEl.style.height = h + 'px';
     termEl.style.transform = `scale(${k})`;
+    // Center a mirror narrower than the tab, like a terminal window would sit.
+    termEl.style.left = Math.max(12, (rect.width - w * k) / 2) + 'px';
   }
 
   // ── outbound ───────────────────────────────────────────────────────────────
@@ -698,6 +709,7 @@ function main() {
 
   // ── composer (a transparent key/paste catcher; text shows in the draft boxes) ──
   function focusComposer() {
+    if (directOn) return; // keys belong to Claude until the user leaves direct mode
     const v = lastState ? overlayView(lastState, selfId) : null;
     if (v && v.canCompose && !composer.disabled) composer.focus();
   }
@@ -723,11 +735,36 @@ function main() {
     const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
     if (text) sendKey(pasteBytes(text));
   });
-  // Clicking anywhere in the tray (but not on a button, and not on draft text —
-  // that's a caret click or the start of a drag-selection) refocuses the catcher.
+  // Clicking anywhere in the tray leaves direct mode (back to composing); clicks
+  // that aren't on a button or draft text also refocus the catcher.
   $('#tray').addEventListener('mousedown', (e) => {
+    if (directOn) setDirect(false);
     if (e.target.closest('button, input, select, a, textarea, .draft-body')) return;
     setTimeout(focusComposer, 0);
+  });
+
+  // Direct mode: translate a keydown to the raw bytes Claude's own UI expects —
+  // a superset of the draft keymap (Tab, Ctrl+letter) since nothing is off-limits
+  // for a driver typing at the "real" terminal. ⌘ stays with the browser.
+  function directKeyBytes(e) {
+    if (e.metaKey) return null;
+    if (e.ctrlKey) {
+      if (!e.altKey && /^[a-z]$/i.test(e.key)) return String.fromCharCode(e.key.toLowerCase().charCodeAt(0) - 96);
+      return null;
+    }
+    if (e.key === 'Tab') return e.shiftKey ? '\x1b[Z' : '\t';
+    return keyToBytes(e);
+  }
+  const setDirect = (on) => sendMsg({ t: 'ui', action: { kind: 'direct', on } });
+  directBtn.addEventListener('click', () => setDirect(!directOn));
+  // Click the terminal → type into Claude (driver+); click back into the tray → compose.
+  stage.addEventListener('mousedown', () => {
+    if (directOn) return;
+    const v = lastState ? overlayView(lastState, selfId) : null;
+    if (v?.canDrive) {
+      setDirect(true);
+      composer.blur();
+    }
   });
 
   // Keys over a standing drag-selection (the catcher is blurred then, so these land
@@ -735,6 +772,17 @@ function main() {
   // deleted and the character follows as an ordinary draft keystroke.
   document.addEventListener('keydown', (e) => {
     if (phase !== 'live') return;
+    if (directOn) {
+      // Straight to Claude. A key that landed on the still-focused catcher was
+      // already mailed by its own handler — don't send it twice.
+      if (e.target === composer) return;
+      const b = directKeyBytes(e);
+      if (b != null) {
+        e.preventDefault();
+        sendKey(b);
+      }
+      return;
+    }
     if (e.metaKey || e.ctrlKey) return; // ⌘C copy of the highlight stays native
     const ds = selectionInDraft();
     if (!ds) return;
@@ -830,6 +878,10 @@ function main() {
   function render() {
     if (!lastState) return;
     const v = overlayView(lastState, selfId);
+    directOn = v.direct.includes(selfId);
+    directBtn.hidden = !v.canDrive;
+    directBtn.classList.toggle('active', directOn);
+    stage.classList.toggle('direct', directOn);
     applyView(v);
     renderStatusbar(v);
     renderClaudeChip(v);
@@ -868,6 +920,11 @@ function main() {
   }
 
   function renderClaudeChip(v) {
+    if (directOn) {
+      trayClaude.className = 'chip claude busy';
+      trayClaude.textContent = '⌨ keys go to Claude — click here to compose';
+      return;
+    }
     trayClaude.className = 'chip claude ' + v.claude.kind;
     trayClaude.textContent = v.claude.text;
   }
@@ -911,7 +968,16 @@ function main() {
       }
       box.append(border, body);
       box.dataset.boxId = d.id;
-      if (d.focusedBySelf) box.append(el('span', 'send-hint', '↵ sends'));
+      const hints = el('span', 'draft-hints');
+      if (d.focusedBySelf) hints.append(el('span', 'send-hint', '↵ sends'));
+      if (v.canCompose) {
+        const del = el('button', 'draft-x', '✕');
+        del.type = 'button';
+        del.title = 'delete this draft';
+        del.onclick = () => sendMsg({ t: 'ui', action: { kind: 'deldraft', id: d.id } });
+        hints.append(del);
+      }
+      box.append(hints);
       // Mouseup, not mousedown: a click places your caret at that spot (blank space
       // → the end); a DRAG leaves the native selection standing — the document-level
       // key handler below turns delete/typing over it into brain edits.

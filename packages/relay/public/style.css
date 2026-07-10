@@ -519,6 +519,12 @@ body {
 #stage.paused #term {
   filter: blur(6px) brightness(0.6);
 }
+/* direct-input mode: the frame glows amber — your keys are going INTO Claude */
+#stage.direct {
+  cursor: text;
+  box-shadow: 0 0 0 1px rgba(232, 163, 61, 0.4), 0 0 22px rgba(232, 163, 61, 0.14),
+    0 24px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
 #cursors {
   position: absolute;
   inset: 10px 12px;
@@ -665,10 +671,17 @@ body {
   font-weight: 700;
   color: var(--c, var(--text));
 }
-.send-hint {
+/* top-right cluster on a draft: the "↵ sends" hint and the delete ✕ */
+.draft-hints {
   position: absolute;
   top: -8px;
   right: 12px;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.send-hint,
+.draft-x {
   font-family: var(--mono);
   font-size: 10px;
   color: var(--text-faint);
@@ -677,6 +690,20 @@ body {
   border-radius: 999px;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
   white-space: nowrap;
+}
+.draft-x {
+  border: none;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+}
+.draft:hover .draft-x,
+.draft-x:focus-visible {
+  opacity: 1;
+}
+.draft-x:hover {
+  color: var(--red);
+  box-shadow: 0 0 0 1px var(--red-ring);
 }
 .draft-body {
   font-family: var(--mono);
