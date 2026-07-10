@@ -19,6 +19,44 @@
 //   \x1bc    full reset (RIS)         \x1b[?1049h  enter alternate screen
 const CLEAR_RE = /\x1b\[2J|\x1b\[3J|\x1bc|\x1b\[\?1049h/g;
 
+// A synchronized-update frame ends here (Claude v2). We trim the memory cap at a
+// frame boundary when we can, so a joiner's replay never starts mid-repaint.
+const SU_END = '\x1b[?2026l';
+
+// A COMPLETE escape sequence: CSI (ESC [ … final), OSC (ESC ] … BEL/ST), or a
+// 2-byte ESC form (ESC 7 / ESC 8). Used to find spans so a cut never lands in the
+// middle of one, and to decide whether a trailing ESC… is finished (finding 2).
+const ESC_SEQ = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[78]/g;
+const ESC_SEQ_AT_START = /^(?:\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[78])/;
+
+// The smallest index >= min at which slicing leaves a CLEAN start — never inside an
+// escape sequence, so a joiner's terminal never renders a fragment (";246m…") as
+// literal text. If min sits inside a sequence we jump to that sequence's end; in
+// plain text any index is safe, so min itself is returned.
+function safeStart(buf, min) {
+  if (min <= 0) return 0;
+  ESC_SEQ.lastIndex = 0;
+  let m;
+  while ((m = ESC_SEQ.exec(buf)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (end <= min) continue; // span entirely before min → irrelevant
+    if (start >= min) return min; // min is in clean text before the next span
+    return end; // min is inside this span → jump past it
+  }
+  return min; // no span covers min → plain text
+}
+
+// Drop a DANGLING trailing escape (a "\x1b[38;5" with no final byte, or a bare ESC)
+// so the replay never ends mid-sequence and eat the live frames that follow it. A
+// completed sequence — even with trailing text — is kept whole.
+function dropTrailingPartial(s) {
+  const esc = s.lastIndexOf('\x1b');
+  if (esc === -1) return s; // no escape at all
+  if (ESC_SEQ_AT_START.test(s.slice(esc))) return s; // last ESC starts a complete seq
+  return s.slice(0, esc); // dangling partial → cut it off
+}
+
 export class ScreenSnapshot {
   #buf = '';
   #cap;
@@ -34,20 +72,42 @@ export class ScreenSnapshot {
     this.#buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
 
     // Drop everything before the last full-screen clear / alt-screen enter: the
-    // screen was wiped there, so nothing prior is visible any more.
+    // screen was wiped there, so nothing prior is visible any more. The cut lands ON
+    // the clear escape, so the retained buffer starts at a clean boundary.
     CLEAR_RE.lastIndex = 0;
     let last = -1;
     let m;
     while ((m = CLEAR_RE.exec(this.#buf))) last = m.index;
     if (last > 0) this.#buf = this.#buf.slice(last);
 
-    // Bound memory: keep the most recent bytes (the freshest paint).
-    if (this.#buf.length > this.#cap) this.#buf = this.#buf.slice(this.#buf.length - this.#cap);
+    this.#trim();
+  }
+
+  // Bound memory to the cap, cutting only at a CLEAN boundary — never mid escape
+  // sequence (finding 2). Prefer a frame boundary (right after an SU_END): the
+  // smallest such cut whose tail fits the cap, dropping whole older frames. When no
+  // frame boundary fits (a line app with no markers), fall back to the smallest
+  // escape-safe index so the retained tail can never begin inside a sequence.
+  #trim() {
+    if (this.#buf.length <= this.#cap) return;
+    const target = this.#buf.length - this.#cap;
+    let cut = -1;
+    let idx = this.#buf.indexOf(SU_END);
+    while (idx !== -1) {
+      const after = idx + SU_END.length;
+      if (this.#buf.length - after <= this.#cap) {
+        cut = after;
+        break;
+      }
+      idx = this.#buf.indexOf(SU_END, after);
+    }
+    if (cut === -1) cut = safeStart(this.#buf, target);
+    this.#buf = this.#buf.slice(cut);
   }
 
   /** The bytes to replay so an attacher sees the current screen (may be ''). */
   get() {
-    return this.#buf;
+    return dropTrailingPartial(this.#buf);
   }
 
   /** Bytes currently retained. */
