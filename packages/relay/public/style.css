@@ -509,8 +509,12 @@ body {
   mask-composite: exclude;
 }
 #term {
+  /* sized to the xterm's own content by script; scaled (never up) to fit the glass.
+     The transform keeps its rect equal to the visual box for pointer/cursor math. */
   position: absolute;
-  inset: 10px 12px;
+  top: 10px;
+  left: 12px;
+  transform-origin: 0 0;
 }
 #stage.paused #term {
   filter: blur(6px) brightness(0.6);
@@ -744,39 +748,23 @@ body {
   white-space: nowrap;
 }
 
-.composer-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin-top: 0.35rem;
-}
+/* the key catcher: invisible and unclickable, focused by script — keystrokes land
+   here and are mailed to the brain; the draft boxes are the only visible composer */
 .composer {
-  flex: 1;
-  font-family: var(--mono);
-  font-size: 0.9rem;
-  color: var(--text);
-  background: var(--inset);
-  border: none;
-  border-radius: 10px;
-  padding: 0.55rem 0.85rem;
-  resize: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
   overflow: hidden;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
-  /* a key catcher, not a real input: your one true caret lives in the draft box */
-  caret-color: transparent;
+  resize: none;
+  pointer-events: none;
 }
-.composer:focus {
-  outline: none;
-  box-shadow: inset 0 0 0 1px rgba(232, 163, 61, 0.45), 0 0 14px rgba(232, 163, 61, 0.1);
-}
-.composer:disabled {
-  opacity: 0.5;
-}
-.composer-hint {
-  font-size: 0.75rem;
-  color: var(--text-faint);
-  font-family: var(--mono);
-  white-space: nowrap;
+/* highlight in draft text — selection is per-tab and native */
+.draft-body::selection,
+.draft-body *::selection {
+  background: rgba(232, 163, 61, 0.35);
 }
 .viewer-note {
   margin: 0.5rem 0 0;

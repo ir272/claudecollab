@@ -255,6 +255,11 @@ async function main() {
     // when it's theirs; injecting bytes into the mirror (the ssh-guest channel) is
     // invisible there because Claude's TUI repaints right over them.
     notice: ui.notice,
+    // The shared clamp — the ONE size every mirrored frame is painted at. Browser
+    // tabs must render their xterm at exactly this size (scaling visually to fit)
+    // or wide frames wrap into garbage; a tab's own container size is only its
+    // CAPACITY, reported via resize and folded into this clamp.
+    view: viewSize(),
   });
 
   // Emit at most one state frame per 50ms: fire immediately when outside the window,
@@ -406,7 +411,17 @@ async function main() {
         notify(userId, `Claude is ${claude.state} — slash and bash fire only while it's idle`);
         return;
       }
-      pty.write(text + '\r');
+      // Type like a human: the text, then Enter as its own keystroke a beat later.
+      // Written as one atomic chunk, Claude's paste heuristic can treat the trailing
+      // \r as a pasted newline and the command submits as a plain chat message.
+      // ponytail: two slash sends inside the gap could interleave; humans don't.
+      pty.write(text);
+      const enter = setTimeout(() => {
+        try {
+          pty.write('\r');
+        } catch {}
+      }, 120);
+      enter.unref?.();
       return;
     }
     queue.enqueue(text, userId);
@@ -704,6 +719,13 @@ async function main() {
     if (action.kind === 'caret') {
       if (!atLeast(role, 'prompter')) return;
       if (drafts.placeCaret(id, action.id, action.offset)) repaintBand();
+      return;
+    }
+    // A drag-selection being deleted (or typed over — the replacement char follows
+    // as an ordinary key). Same bar as typing: prompter and up.
+    if (action.kind === 'delrange') {
+      if (!atLeast(role, 'prompter')) return;
+      if (drafts.deleteRange(id, action.id, action.start, action.end)) repaintBand();
       return;
     }
     if (action.kind === 'command') routeSend(id, { text: String(action.text) });

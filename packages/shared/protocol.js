@@ -111,6 +111,7 @@ function isUiAction(a) {
   if (a.kind === 'role') return isStr(a.id) && isStr(a.role);
   if (a.kind === 'command') return isStr(a.text);
   if (a.kind === 'caret') return isStr(a.id) && isNum(a.offset); // click into a draft
+  if (a.kind === 'delrange') return isStr(a.id) && isNum(a.start) && isNum(a.end); // delete a selection
   return false;
 }
 

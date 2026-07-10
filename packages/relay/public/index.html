@@ -85,17 +85,9 @@
           </div>
           <div id="drafts" class="drafts"></div>
           <div id="queue" class="queue" hidden></div>
-          <div class="composer-row">
-            <textarea
-              id="composer"
-              class="composer"
-              rows="1"
-              spellcheck="false"
-              autocomplete="off"
-              placeholder="Type to compose — your words appear in the draft above…"
-            ></textarea>
-            <span id="composer-hint" class="composer-hint"></span>
-          </div>
+          <!-- invisible key catcher: keystrokes land here and are mailed to the
+               brain; the draft boxes above are the only visible composer -->
+          <textarea id="composer" class="composer" rows="1" spellcheck="false" autocomplete="off" aria-label="compose"></textarea>
           <p id="viewer-note" class="viewer-note" hidden>
             You're a viewer — ask the host for a role to type.
           </p>

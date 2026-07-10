@@ -216,6 +216,32 @@ export class Drafts {
     const box = this.#boxById(boxId);
     if (!box) return false;
     if (this.activeBox(userId) !== box) this.#leaveCurrent(userId);
+    box.cursors.set(userId, this.#atomIndexAt(box, offset, 'round'));
+    return true;
+  }
+
+  /**
+   * Delete a display-offset range from a draft (a browser drag-selection being
+   * deleted or typed over). The user's caret lands at the range start; an atom the
+   * range only partially covers (a paste token) is deleted whole.
+   */
+  deleteRange(userId, boxId, start, end) {
+    const box = this.#boxById(boxId);
+    if (!box) return false;
+    const a = this.#atomIndexAt(box, Math.min(start, end), 'floor');
+    const b = this.#atomIndexAt(box, Math.max(start, end), 'ceil');
+    if (this.activeBox(userId) !== box) this.#leaveCurrent(userId);
+    box.cursors.set(userId, a);
+    if (b > a) {
+      this.#splice(box, a, b - a, [], userId);
+      box.authors.add(userId);
+    }
+    return true;
+  }
+
+  // Display offset → atom index. 'round' snaps by atom midpoint (caret placement);
+  // 'floor'/'ceil' bound a range so a partially covered atom is included in it.
+  #atomIndexAt(box, offset, mode) {
     const want = Math.max(0, Math.trunc(Number(offset) || 0));
     let seen = 0;
     let pos = 0;
@@ -226,11 +252,11 @@ export class Drafts {
         pos += 1;
         continue;
       }
-      if (want - seen > w / 2) pos += 1; // past the midpoint → land after the atom
+      if (want <= seen) break; // exactly on the boundary → before the atom
+      if (mode === 'ceil' || (mode === 'round' && want - seen > w / 2)) pos += 1;
       break;
     }
-    box.cursors.set(userId, pos);
-    return true;
+    return pos;
   }
 
   /** Fill an open @mention with @name plus a trailing space; closes the mention. */

@@ -332,6 +332,9 @@ export function overlayView(state, selfId) {
     knocks,
     // The latest addressed notice ({id, msg, seq}) — shown as a toast when it's mine.
     notice: s.notice && typeof s.notice === 'object' ? s.notice : null,
+    // The shared clamp every mirrored frame is painted at; the xterm mirror must
+    // be exactly this size (null on an older host → fall back to local fitting).
+    view: s.view && typeof s.view === 'object' ? s.view : null,
   };
 }
 
@@ -387,6 +390,10 @@ function main() {
   let endStep = 0; // host End-Session confirm: 0 idle · 1 "end?" · 2 "save?"
   const cursorEls = new Map(); // participant id -> floating-cursor DOM node
   let ptrLast = 0;
+  // Mirror sizing: screen bytes buffered until state.view has sized the terminal.
+  let mirrorSized = false;
+  let pendingFrames = [];
+  let lastViewKey = '';
 
   // ── DOM handles ──────────────────────────────────────────────────────────────
   const joinScreen = $('#join');
@@ -406,7 +413,6 @@ function main() {
   const trayDrafts = $('#drafts');
   const trayQueue = $('#queue');
   const composer = $('#composer');
-  const composerHint = $('#composer-hint');
   const newDraftBtn = $('#new-draft');
   const viewerNote = $('#viewer-note');
   const hostControls = $('#host-controls');
@@ -497,8 +503,12 @@ function main() {
 
   function onMessage(ev) {
     if (typeof ev.data !== 'string') {
-      // Binary = screen bytes → feed the xterm mirror.
-      if (term) term.write(new Uint8Array(ev.data));
+      // Binary = screen bytes → the xterm mirror. Until the first state frame has
+      // told us the shared size, buffer: the join snapshot was painted at that size,
+      // and writing it into a wrong-sized terminal wraps every line into garbage.
+      const bytes = new Uint8Array(ev.data);
+      if (term && mirrorSized) term.write(bytes);
+      else pendingFrames.push(bytes);
       return;
     }
     let msg;
@@ -592,38 +602,72 @@ function main() {
     stage.addEventListener('mouseleave', () => sendPointer(-1, -1)); // park off-canvas
   }
 
-  // Manual fit — @xterm/addon-fit is not vendored, so we replicate its math from the
-  // renderer's own measured cell size (accurate, matches what the addon does), with a
-  // conservative fallback if the private field is unavailable.
-  function fit() {
-    if (!term) return;
-    const rect = termEl.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) return;
-    let cw = 0;
-    let ch = 0;
+  // The tab's cell size, from the renderer's own measurement (what addon-fit reads),
+  // with a conservative fallback if the private field is unavailable.
+  function cellSize() {
     try {
-      const cell = term._core?._renderService?.dimensions?.css?.cell;
-      if (cell && cell.width && cell.height) {
-        cw = cell.width;
-        ch = cell.height;
-      }
+      const cell = term?._core?._renderService?.dimensions?.css?.cell;
+      if (cell && cell.width && cell.height) return { cw: cell.width, ch: cell.height };
     } catch {
       /* fall through to estimate */
     }
-    if (!cw || !ch) {
-      cw = 13 * 0.6; // rough monospace advance for the 13px font
-      ch = 13 * 1.1;
-    }
-    const cols = Math.max(2, Math.floor(rect.width / cw));
-    const rows = Math.max(1, Math.floor(rect.height / ch));
-    if (cols !== term.cols || rows !== term.rows) {
-      try {
-        term.resize(cols, rows);
-      } catch {
-        /* xterm not ready */
+    return { cw: 13 * 0.6, ch: 13 * 1.1 }; // rough advance for the 13px mono font
+  }
+
+  // Report this tab's CAPACITY (how many cells its container could show) — the brain
+  // folds it into the shared clamp. The mirror itself never sizes from the container:
+  // it renders at exactly state.view (see applyView) and scales down visually.
+  function fit() {
+    if (!term) return;
+    const rect = stage.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return;
+    const { cw, ch } = cellSize();
+    const cols = Math.max(2, Math.floor((rect.width - 24) / cw));
+    const rows = Math.max(1, Math.floor((rect.height - 20) / ch));
+    sendMsg({ t: 'resize', cols, rows });
+    scaleTerm();
+  }
+
+  // Render the mirror at the shared size the frames were painted at; on the first
+  // state frame, flush the buffered join snapshot into the now-correctly-sized term.
+  function applyView(v) {
+    if (!term) return;
+    const vw = v.view;
+    if (vw && vw.cols >= 2 && vw.rows >= 1) {
+      const key = vw.cols + 'x' + vw.rows;
+      if (key !== lastViewKey) {
+        lastViewKey = key;
+        try {
+          term.resize(vw.cols, vw.rows);
+        } catch {
+          /* xterm not ready */
+        }
       }
     }
-    sendMsg({ t: 'resize', cols: term.cols, rows: term.rows });
+    if (!mirrorSized) {
+      mirrorSized = true; // no view field (older host) → degrade: just start writing
+      for (const chunk of pendingFrames) term.write(chunk);
+      pendingFrames = [];
+    }
+    scaleTerm();
+  }
+
+  // The mirror can be wider than this tab: scale it down to fit (never up). The
+  // transform keeps termEl's rect equal to the VISUAL content box, so pointer math
+  // and the cursor overlay read true positions from getBoundingClientRect().
+  function scaleTerm() {
+    if (!term) return;
+    // .xterm-screen is the true cols×rows content box (.xterm just fills its parent)
+    const inner = termEl.querySelector('.xterm-screen');
+    if (!inner) return;
+    const w = inner.offsetWidth;
+    const h = inner.offsetHeight;
+    if (w < 2 || h < 2) return;
+    const rect = stage.getBoundingClientRect();
+    const k = Math.min((rect.width - 24) / w, (rect.height - 20) / h, 1);
+    termEl.style.width = w + 'px';
+    termEl.style.height = h + 'px';
+    termEl.style.transform = `scale(${k})`;
   }
 
   // ── outbound ───────────────────────────────────────────────────────────────
@@ -679,9 +723,30 @@ function main() {
     const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
     if (text) sendKey(pasteBytes(text));
   });
-  // Clicking anywhere in the tray (but not on a button) refocuses the catcher.
+  // Clicking anywhere in the tray (but not on a button, and not on draft text —
+  // that's a caret click or the start of a drag-selection) refocuses the catcher.
   $('#tray').addEventListener('mousedown', (e) => {
-    if (e.target.closest('button, input, select, a')) return;
+    if (e.target.closest('button, input, select, a, textarea, .draft-body')) return;
+    setTimeout(focusComposer, 0);
+  });
+
+  // Keys over a standing drag-selection (the catcher is blurred then, so these land
+  // on the document): delete removes the range; typing replaces it — the range is
+  // deleted and the character follows as an ordinary draft keystroke.
+  document.addEventListener('keydown', (e) => {
+    if (phase !== 'live') return;
+    if (e.metaKey || e.ctrlKey) return; // ⌘C copy of the highlight stays native
+    const ds = selectionInDraft();
+    if (!ds) return;
+    const printable = !e.altKey && [...e.key].length === 1;
+    if (e.key === 'Backspace' || e.key === 'Delete' || printable) {
+      e.preventDefault();
+      sendMsg({ t: 'ui', action: { kind: 'delrange', id: ds.boxId, start: ds.start, end: ds.end } });
+      if (printable) sendKey(e.key);
+    } else if (e.key !== 'Escape') {
+      return; // arrows etc: just collapse the selection below
+    }
+    window.getSelection()?.removeAllRanges();
     setTimeout(focusComposer, 0);
   });
   newDraftBtn.addEventListener('click', () => {
@@ -765,6 +830,7 @@ function main() {
   function render() {
     if (!lastState) return;
     const v = overlayView(lastState, selfId);
+    applyView(v);
     renderStatusbar(v);
     renderClaudeChip(v);
     renderPaused(v);
@@ -811,7 +877,13 @@ function main() {
     stage.classList.toggle('paused', v.paused);
   }
 
+  let lastDraftsJson = '';
   function renderDrafts(v) {
+    // Rebuild only when the drafts actually changed: every rebuild would destroy a
+    // native drag-selection, and state frames arrive for unrelated reasons (pointers).
+    const json = JSON.stringify(v.drafts);
+    if (json === lastDraftsJson) return;
+    lastDraftsJson = json;
     trayDrafts.innerHTML = '';
     if (v.drafts.length === 0) {
       const empty = el('div', 'drafts-empty', 'No drafts yet. Start typing to compose one together.');
@@ -838,11 +910,15 @@ function main() {
         }
       }
       box.append(border, body);
+      box.dataset.boxId = d.id;
       if (d.focusedBySelf) box.append(el('span', 'send-hint', '↵ sends'));
-      // Click anywhere in a draft to put your caret there (blank space → the end).
-      // The brain owns the caret — we only mail the display offset we hit.
-      box.addEventListener('mousedown', (e) => {
+      // Mouseup, not mousedown: a click places your caret at that spot (blank space
+      // → the end); a DRAG leaves the native selection standing — the document-level
+      // key handler below turns delete/typing over it into brain edits.
+      box.addEventListener('mouseup', (e) => {
         if (e.target.closest('button')) return;
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed) return; // keep the highlight
         const off = clickCharOffset(body, e.clientX, e.clientY);
         sendMsg({ t: 'ui', action: { kind: 'caret', id: d.id, offset: off == null ? d.text.length : off } });
         setTimeout(focusComposer, 0);
@@ -851,9 +927,30 @@ function main() {
     }
   }
 
-  // Translate a click inside a draft body into a display-character offset. Caret
-  // spans hold no text, so the body's text nodes concatenate to exactly the draft's
-  // display text. A miss (blank padding, no hit test API) returns null → end.
+  // (node, offset) inside a draft body → display-character offset. Caret spans hold
+  // no text, so the body's text nodes concatenate to exactly the draft's display
+  // text. Returns null when the point isn't on the body's text.
+  function domOffset(bodyEl, node, off) {
+    if (!node || !bodyEl.contains(node)) return null;
+    if (node.nodeType !== Node.TEXT_NODE) {
+      // An element hit: `off` counts childNodes — sum the text of the ones before it.
+      if (node !== bodyEl) return null;
+      let total = 0;
+      let i = 0;
+      for (const c of node.childNodes) {
+        if (i >= off) break;
+        total += c.textContent.length;
+        i += 1;
+      }
+      return total;
+    }
+    let total = 0;
+    const walker = document.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n && n !== node; n = walker.nextNode()) total += n.nodeValue.length;
+    return total + off;
+  }
+
+  // Translate a click inside a draft body into a display-character offset.
   function clickCharOffset(bodyEl, x, y) {
     const p = document.caretPositionFromPoint
       ? document.caretPositionFromPoint(x, y)
@@ -863,11 +960,24 @@ function main() {
     if (!p) return null;
     const node = 'offsetNode' in p ? p.offsetNode : p.startContainer;
     const off = 'offsetNode' in p ? p.offset : p.startOffset;
-    if (!node || node.nodeType !== Node.TEXT_NODE || !bodyEl.contains(node)) return null;
-    let total = 0;
-    const walker = document.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
-    for (let n = walker.nextNode(); n && n !== node; n = walker.nextNode()) total += n.nodeValue.length;
-    return total + off;
+    if (!node || node.nodeType !== Node.TEXT_NODE) return null; // blank area → caller uses the end
+    return domOffset(bodyEl, node, off);
+  }
+
+  // The current drag-selection if it lives inside ONE draft body, as display offsets.
+  function selectionInDraft() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    const r = sel.getRangeAt(0);
+    const anchor = r.commonAncestorContainer;
+    const bodyEl = (anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor)?.closest?.('.draft-body');
+    if (!bodyEl) return null;
+    const start = domOffset(bodyEl, r.startContainer, r.startOffset);
+    const end = domOffset(bodyEl, r.endContainer, r.endOffset);
+    if (start == null || end == null || start === end) return null;
+    const boxId = bodyEl.closest('.draft')?.dataset.boxId;
+    if (!boxId) return null;
+    return { boxId, start: Math.min(start, end), end: Math.max(start, end) };
   }
 
   function renderQueue(v) {
@@ -892,17 +1002,14 @@ function main() {
     composer.disabled = !can;
     newDraftBtn.disabled = !can;
     viewerNote.hidden = can;
-    if (!can) {
-      composerHint.textContent = '';
-      return;
-    }
-    const focused = v.drafts.find((d) => d.focusedBySelf);
-    composerHint.textContent = focused ? '⏎ sends · Shift+⏎ newline' : 'Type to start a draft';
   }
 
   function renderCursors(v) {
     const seen = new Set();
-    const rect = termEl.getBoundingClientRect();
+    const rect = termEl.getBoundingClientRect(); // post-scale: the visual content box
+    const base = cursorLayer.getBoundingClientRect();
+    const ox = rect.left - base.left;
+    const oy = rect.top - base.top;
     for (const p of v.othersPointers) {
       seen.add(p.id);
       let node = cursorEls.get(p.id);
@@ -922,7 +1029,7 @@ function main() {
       pill.textContent = p.name;
       pill.style.background = p.color;
       pill.style.setProperty('--c', p.color);
-      node.style.transform = `translate(${(p.x * rect.width).toFixed(1)}px, ${(p.y * rect.height).toFixed(1)}px)`;
+      node.style.transform = `translate(${(ox + p.x * rect.width).toFixed(1)}px, ${(oy + p.y * rect.height).toFixed(1)}px)`;
     }
     for (const [id, node] of cursorEls) {
       if (!seen.has(id)) {

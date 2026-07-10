@@ -618,3 +618,24 @@ test('placeCaret snaps to a paste token edge, never inside it', () => {
   assert.equal(d.cursorOf('ian').pos, 2);
   assert.equal(d.placeCaret('ian', 'nope', 0), false); // unknown box refused
 });
+
+test('deleteRange removes a display range and parks the caret at its start', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'hello world');
+  const id = d.activeBox('ian').id;
+  assert.equal(d.deleteRange('ian', id, 3, 8), true);
+  assert.equal(d.activeBox('ian').text, 'helrld');
+  assert.equal(d.cursorOf('ian').pos, 3);
+  assert.equal(d.deleteRange('ian', id, 9, 2), true); // reversed endpoints normalise
+  assert.equal(d.activeBox('ian').text, 'he');
+  assert.equal(d.deleteRange('ian', 'nope', 0, 1), false);
+});
+
+test('deleteRange takes a partially covered paste token out whole', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'a\x1b[200~two\nlines\x1b[201~b'); // atoms: a, [pasted 2 lines], b
+  const box = d.activeBox('ian');
+  d.deleteRange('ian', box.id, 3, 6); // a range strictly inside the token's display
+  assert.equal(box.text, 'ab');
+  assert.equal(d.cursorOf('ian').pos, 1);
+});
