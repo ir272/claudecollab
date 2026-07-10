@@ -13,12 +13,13 @@
 import { atLeast } from './state.js';
 
 /** The claude-share command verbs (without the leading slash). */
-export const COMMAND_NAMES = new Set(['role', 'kick', 'pause', 'resume', 'recap', 'end']);
+export const COMMAND_NAMES = new Set(['role', 'kick', 'pause', 'resume', 'recap', 'end', 'queue']);
 
 /** Roles /role can assign (never host — the host seat is fixed). */
 const ASSIGNABLE_ROLES = new Set(['driver', 'prompter', 'viewer']);
 const ROLE_USAGE = 'usage: /role @name driver|prompter|viewer';
 const KICK_USAGE = 'usage: /kick @name';
+const QUEUE_USAGE = 'usage: /queue del <n> | /queue edit <n> <text>';
 
 // Pull the bare name out of an @mention token (`@siddh` → `siddh`). A leading @
 // is optional so `/kick bob` also works. Returns null for anything unnameable.
@@ -54,6 +55,23 @@ export function parse(text) {
       if (!mention) return { name, error: KICK_USAGE };
       return { name, mention };
     }
+    case 'queue': {
+      // /queue del <n>  → delete item n (author, or driver/host on any item)
+      // /queue edit <n> <text> → rewrite item n (author only). n is 1-based, matching
+      // the queue block the renderer numbers.
+      const sub = (parts[1] ?? '').toLowerCase();
+      const n = Number(parts[2]);
+      if (sub === 'del' || sub === 'delete' || sub === 'rm') {
+        if (!Number.isInteger(n) || n < 1) return { name, error: QUEUE_USAGE };
+        return { name, sub: 'del', index: n };
+      }
+      if (sub === 'edit') {
+        const text = parts.slice(3).join(' ');
+        if (!Number.isInteger(n) || n < 1 || !text) return { name, error: QUEUE_USAGE };
+        return { name, sub: 'edit', index: n, text };
+      }
+      return { name, error: QUEUE_USAGE };
+    }
     default:
       // pause | resume | recap | end — no arguments
       return { name };
@@ -62,8 +80,10 @@ export function parse(text) {
 
 /**
  * Is `role` allowed to run command `name`? (spec §per-role input table)
- *   • /recap                              → prompter and up
+ *   • /recap /queue                        → prompter and up
  *   • /role /kick /pause /resume /end      → host only
+ * /queue defers per-item permission (author vs driver/host) to the Queue methods;
+ * this only gates who may attempt a queue edit/delete at all (spec §queue).
  * @param {string} name
  * @param {string} role
  * @returns {boolean}
@@ -71,6 +91,7 @@ export function parse(text) {
 export function permitted(name, role) {
   switch (name) {
     case 'recap':
+    case 'queue':
       return atLeast(role, 'prompter');
     case 'role':
     case 'kick':

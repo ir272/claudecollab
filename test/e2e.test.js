@@ -241,6 +241,15 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   // queued — so the only way the guest can have it is the mirrored band.
   await a.waitFor('a → use tailwind for all of it');
 
+  // ── the queue is reachable: A queues a throwaway, then deletes it via /queue ──
+  // (Queue.edit/remove were implemented + tested but had no input path; /queue del
+  // <n> is the in-band affordance. A is a prompter, deleting their OWN item.)
+  a.type('scratch this idea\r');
+  await host.waitFor('queue (2)');
+  await host.waitFor('a → scratch this idea'); // item #2, attributed to A
+  a.type('/queue del 2\r');
+  await host.waitFor('removed queued item #2'); // the wired path ran queue.remove()
+
   // ── the gate: a prompter's `y` is REJECTED (never reaches Claude) ────────────
   a.type('y');
   await delay(600); // long enough that a wrongly-forwarded y would have answered the ask
@@ -289,6 +298,7 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   assert.match(md, /# claude-share session/);
   assert.match(md, /\*\*a\*\*: make the hero full-bleed/); // prompt 1, attributed to A
   assert.match(md, /\*\*a\*\*: use tailwind for all of it/); // prompt 2, attributed to A
+  assert.match(md, /removed queued item #2/); // /queue del reached queue.remove()
   assert.match(md, /set a to prompter/); // role change recorded
   assert.match(md, /set a to driver/); // role change recorded
   assert.match(md, /a left/); // self-detach freed A's seat (no ghost participant)

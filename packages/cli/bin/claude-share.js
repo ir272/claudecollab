@@ -338,6 +338,35 @@ async function main() {
         log.event(`${by} resumed sharing`);
         showToast('sharing resumed');
         break;
+      case 'queue': {
+        // Reachable path for Queue.edit()/remove() (spec §queue): an author edits or
+        // deletes their own queued item; a driver/host deletes any. Per-item rights
+        // are enforced by the Queue methods; the index is 1-based (the renderer's
+        // numbering). handleCommand only runs for prompter+, so viewers never arrive.
+        const item = queue.items[parsed.index - 1];
+        if (!item) {
+          notify(userId, `no queued item #${parsed.index}`);
+          return;
+        }
+        if (parsed.sub === 'del') {
+          if (!queue.remove(item.id, userId, role)) {
+            notify(userId, `you can't delete queued item #${parsed.index} — it isn't yours`);
+            return;
+          }
+          const msg = `${by} removed queued item #${parsed.index}`;
+          log.event(msg);
+          showToast(msg);
+        } else {
+          if (!queue.edit(item.id, parsed.text, userId, role)) {
+            notify(userId, 'you can only edit your own queued item');
+            return;
+          }
+          const msg = `${by} edited queued item #${parsed.index}`;
+          log.event(msg);
+          showToast(msg);
+        }
+        break;
+      }
       case 'recap':
         runRecap(by);
         break;

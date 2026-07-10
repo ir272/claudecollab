@@ -98,6 +98,9 @@ test('dispatch accepts a Buffer as well as a string', () => {
 test('classifySend distinguishes command / claude-slash / bash / prompt', () => {
   assert.deepEqual(classifySend('/role @a driver'), { kind: 'command', name: 'role' });
   assert.deepEqual(classifySend('/end'), { kind: 'command', name: 'end' });
+  // /queue is ours — it must route to the command handler, NOT be forwarded to
+  // Claude as an unknown slash command (which would make it unreachable).
+  assert.deepEqual(classifySend('/queue del 1'), { kind: 'command', name: 'queue' });
   assert.deepEqual(classifySend('/clear'), { kind: 'claude-slash' });
   assert.deepEqual(classifySend('/model opus'), { kind: 'claude-slash' });
   assert.deepEqual(classifySend('!ls -la'), { kind: 'bash' });

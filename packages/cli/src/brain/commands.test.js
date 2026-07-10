@@ -14,7 +14,7 @@ test('parse returns null for non-slash text and unknown slash commands', () => {
 });
 
 test('COMMAND_NAMES lists exactly the claude-share commands', () => {
-  assert.deepEqual([...COMMAND_NAMES].sort(), ['end', 'kick', 'pause', 'recap', 'resume', 'role'].sort());
+  assert.deepEqual([...COMMAND_NAMES].sort(), ['end', 'kick', 'pause', 'queue', 'recap', 'resume', 'role'].sort());
 });
 
 test('parse /role reads the @mention and target role', () => {
@@ -37,6 +37,27 @@ test('parse /kick reads the @mention', () => {
   assert.ok(parse('/kick').error, 'kick needs a target');
 });
 
+test('parse /queue reads del/edit with a 1-based index', () => {
+  assert.deepEqual(parse('/queue del 2'), { name: 'queue', sub: 'del', index: 2 });
+  assert.deepEqual(parse('/queue rm 1'), { name: 'queue', sub: 'del', index: 1 }, 'rm aliases del');
+  assert.deepEqual(parse('/queue delete 3'), { name: 'queue', sub: 'del', index: 3 });
+  assert.deepEqual(parse('/queue edit 2 use tailwind instead'), {
+    name: 'queue',
+    sub: 'edit',
+    index: 2,
+    text: 'use tailwind instead',
+  });
+});
+
+test('parse /queue reports usage on a bad subcommand or index', () => {
+  assert.equal(parse('/queue').error, 'usage: /queue del <n> | /queue edit <n> <text>');
+  assert.equal(parse('/queue del').error, 'usage: /queue del <n> | /queue edit <n> <text>');
+  assert.equal(parse('/queue del 0').error, 'usage: /queue del <n> | /queue edit <n> <text>', 'index is 1-based');
+  assert.equal(parse('/queue del x').error, 'usage: /queue del <n> | /queue edit <n> <text>');
+  assert.equal(parse('/queue edit 1').error, 'usage: /queue del <n> | /queue edit <n> <text>', 'edit needs text');
+  assert.equal(parse('/queue frobnicate 1').error, 'usage: /queue del <n> | /queue edit <n> <text>');
+});
+
 test('parse handles the argless commands', () => {
   assert.deepEqual(parse('/pause'), { name: 'pause' });
   assert.deepEqual(parse('/resume'), { name: 'resume' });
@@ -47,11 +68,13 @@ test('parse handles the argless commands', () => {
 
 // ── permitted (spec input table) ────────────────────────────────────────────────
 
-test('recap is prompter and up', () => {
-  assert.equal(permitted('recap', 'viewer'), false);
-  assert.equal(permitted('recap', 'prompter'), true);
-  assert.equal(permitted('recap', 'driver'), true);
-  assert.equal(permitted('recap', 'host'), true);
+test('recap and queue are prompter and up', () => {
+  for (const cmd of ['recap', 'queue']) {
+    assert.equal(permitted(cmd, 'viewer'), false, cmd);
+    assert.equal(permitted(cmd, 'prompter'), true, cmd);
+    assert.equal(permitted(cmd, 'driver'), true, cmd);
+    assert.equal(permitted(cmd, 'host'), true, cmd);
+  }
 });
 
 test('role/kick/pause/resume/end are host only', () => {

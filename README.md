@@ -76,7 +76,9 @@ Host commands: `/role @name <role>` · `/kick @name` · `/pause` / `/resume` · 
 
 ## Composing together
 
-Each draft is its own author-tagged box. **Enter** sends only the box your cursor is in; move your cursor into someone else's box to co-write it. **Ctrl+N** starts a fresh draft of your own (the "+ start a new draft" affordance) — handy when your cursor is parked in a box someone else is writing. Standard editing keys work inside a draft (shift+enter for a newline, word-jump, kill-line, home/end).
+Each draft is its own author-tagged box, and everyone's live cursor shows up in it — two named cursors writing one prompt together. **Enter** sends only the box your cursor is in; move your cursor into someone else's box to co-write it. **Ctrl+N** starts a fresh draft of your own (the "+ start a new draft" affordance) — handy when your cursor is parked in a box someone else is writing. Standard editing keys work inside a draft (shift+enter for a newline, word-jump, kill-line, home/end).
+
+When Claude is busy, sent drafts wait in a numbered queue. Manage yours with `/queue del <n>` and `/queue edit <n> <text>` — you can edit or delete your own item; a driver or the host can delete any.
 
 ## One thing to really understand
 
