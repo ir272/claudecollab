@@ -25,6 +25,7 @@ import { startPty } from '../src/pty.js';
 import { paint, ROLE_GLYPH, draftBox, queueBlock, knockLine } from '../src/renderer.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
 import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js';
+import { createPartitioner } from '../src/term-chatter.js';
 import { RoomState, HOST_ID } from '../src/brain/state.js';
 import { Queue } from '../src/brain/queue.js';
 import { Log } from '../src/brain/log.js';
@@ -489,7 +490,15 @@ async function main() {
     repaintBand();
   };
 
-  const RELAY_HOST = parseRelayUrl(opts.relayUrl).host;
+  const { host: RELAY_HOST, port: RELAY_PORT } = parseRelayUrl(opts.relayUrl);
+  const inviteFor = (code) =>
+    RELAY_PORT === 22 ? `ssh ${code}@${RELAY_HOST}` : `ssh -p ${RELAY_PORT} ${code}@${RELAY_HOST}`;
+  // One stateful chatter partitioner per guest (split sequences carry per stream).
+  const guestPartitioners = new Map();
+  const guestPartitioner = (id) => {
+    if (!guestPartitioners.has(id)) guestPartitioners.set(id, createPartitioner());
+    return guestPartitioners.get(id);
+  };
 
   // Attach every relay→brain handler to one relay instance. Reused verbatim for the
   // initial connection and each reconnect, so a reattached connection behaves
@@ -501,7 +510,18 @@ async function main() {
       const reclaimed = state.room === code; // we already held this exact code → reclaim
       state.setRoom(code);
       if (reclaimed) showToast('reconnected — room reclaimed', 6000);
-      else showToast(`room ready · invite: ssh ${code}@${RELAY_HOST}`, 8000);
+      else {
+        const invite = inviteFor(code);
+        // Best-effort clipboard copy (spec: invite on the clipboard before
+        // Claude finishes booting). macOS only for now; silent on failure.
+        if (process.platform === 'darwin' && !process.env.CLAUDE_SHARE_NO_CLIPBOARD) {
+          try {
+            const pb = execFile('pbcopy');
+            pb.stdin.end(invite);
+          } catch {}
+        }
+        showToast(`room ready · invite copied: ${invite}`, 15000);
+      }
     });
     r.onGone(() => {
       // Reclaim refused: the 10-min TTL lapsed or the room truly ended. Nothing to
@@ -529,10 +549,18 @@ async function main() {
       showToast(`${g.name} joined as ${g.role} ${ROLE_GLYPH[g.role] ?? ''}`);
       recomputeClamp();
     });
-    r.onLeave((id) => forgetGuest(id));
+    r.onLeave((id) => {
+      guestPartitioners.delete(id);
+      forgetGuest(id);
+    });
     r.onKey(({ id, data }) => {
+      // Guests' terminals also answer mirrored queries and emit mouse reports.
+      // Claude already gets the HOST terminal's answers; guest chatter is
+      // dropped (v1: guest mouse doesn't drive the shared session).
+      const { human } = guestPartitioner(id)(data);
+      if (!human) return;
       const role = state.roleOf(id) ?? 'viewer';
-      applyInput(id, dispatch(id, role, data, { armed, toasted }));
+      applyInput(id, dispatch(id, role, Buffer.from(human, 'binary'), { armed, toasted }));
     });
     r.onResize(({ id, cols, rows }) => {
       state.setSize(id, cols, rows);
@@ -680,19 +708,27 @@ async function main() {
   // ── host stdin ──────────────────────────────────────────────────────────────
   if (stdin.isTTY) stdin.setRawMode(true);
   stdin.resume();
+  const partitionHostInput = createPartitioner();
   stdin.on('data', (d) => {
+    // Terminal chatter first: DA/version replies and mouse reports are the
+    // terminal answering Claude, not the human typing — they belong to the PTY,
+    // never to the composer (they render as "[<35;34;4M" garbage in drafts).
+    const { chatter, human } = partitionHostInput(d);
+    if (chatter) pty.write(Buffer.from(chatter, 'binary'));
+    if (!human) return;
+    const d2 = Buffer.from(human, 'binary');
     // Modal host interactions intercept a lone y/n first: an /end confirmation,
     // then a knocking guest. Neither is forwarded to Claude.
-    if (endConfirm) return handleEndConfirm(d);
+    if (endConfirm) return handleEndConfirm(d2);
     if (relay && pendingKnocks.length) {
-      const s = d.toString('utf8');
+      const s = d2.toString('utf8');
       if (s === 'y' || s === 'Y') return answerKnock(true);
       if (s === 'n' || s === 'N') return answerKnock(false);
     }
     // Sharing: the host composes through the same gate as everyone. Solo: the host
     // drives Claude directly (the composer is a sharing tool).
-    if (multiplayer) applyInput(HOST_ID, dispatch(HOST_ID, 'host', d, { armed, toasted }));
-    else pty.write(d);
+    if (multiplayer) applyInput(HOST_ID, dispatch(HOST_ID, 'host', d2, { armed, toasted }));
+    else pty.write(d2);
   });
 
   process.on('SIGWINCH', () => {

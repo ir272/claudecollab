@@ -159,7 +159,7 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
       cols: 100,
       rows: 30,
       cwd: workDir,
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir },
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' },
     },
   );
   cli.onData((d) => host.feed(d));
@@ -188,8 +188,8 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   // socket, ssh to the relay, get a room. Under heavy parallel load the process can
   // be CPU-starved for many seconds before it paints, so give this one wait ample
   // headroom (every later step is sub-second once booted).
-  await host.waitFor('room ready · invite: ssh ', 60000);
-  const m = host.get().match(/ssh ([a-z]+-[a-z]+)@127\.0\.0\.1/);
+  await host.waitFor('room ready · invite copied: ssh ', 60000);
+  const m = host.get().match(/ssh (?:-p \d+ )?([a-z]+-[a-z]+)@127\.0\.0\.1/);
   assert.ok(m, 'invite line carries an adjective-animal room code');
   const code = m[1];
 
