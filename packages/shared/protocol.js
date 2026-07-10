@@ -19,6 +19,21 @@ export const TYPES = Object.freeze({
   TO: 'to', // host->relay: {t:'to', id, data}   (one guest only, base64)
   DROP: 'drop', // host->relay: {t:'drop', id, ban}
   END: 'end', // host->relay: {t:'end'}
+
+  // ── overlay-state channel (browser multiplayer surface) ────────────────────
+  // The browser is the multiplayer surface for everyone (host included): a plain
+  // ssh guest still exchanges raw bytes, but a browser view renders a rich overlay
+  // from the host's snapshot and mails back pointer moves and button-driven commands.
+  STATE: 'state', // host->relay: {t:'state', data:{room, participants:[{id,name,role,color}],
+  //   drafts:<Drafts.snapshot()>, queue:[{n,author,text}], claudeState:'busy'|'idle'|'ask',
+  //   paused:bool, pointers:{id:{x,y,name,color}}, knocks:[{id,name,fp,seen}]}} — full
+  //   overlay snapshot, emitted on every brain change (throttled ≤1/50ms); the relay
+  //   fans it out to browser views. Knocks live IN the state (the host admits from the browser).
+  POINTER: 'pointer', // guest->host (relay stamps `id` = sender): {t:'pointer', id?, x, y}
+  //   x/y normalized 0..1 over the terminal canvas; the host rebroadcasts via state.pointers.
+  UI: 'ui', // guest->host (relay stamps `id` = sender): {t:'ui', id?, action}
+  //   action = {kind:'admit'|'deny', id} | {kind:'command', text}. The command text runs
+  //   through the existing parser AS that sender, so the role gate still applies.
 });
 
 /**
@@ -83,6 +98,17 @@ export function decode(chunk) {
 
 const isStr = (v) => typeof v === 'string';
 const isNum = (v) => Number.isFinite(v);
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+// A {t:'ui'} action: a knock verdict (admit/deny, carrying the target knock id) or
+// a button-driven command (carrying the command text). Anything else is rejected —
+// this is the boundary that lets a browser button drive the host, so it fails closed.
+function isUiAction(a) {
+  if (!isObj(a)) return false;
+  if (a.kind === 'admit' || a.kind === 'deny') return isStr(a.id);
+  if (a.kind === 'command') return isStr(a.text);
+  return false;
+}
 
 /**
  * Shallow structural validation of a decoded message. Returns true only for a
@@ -123,6 +149,15 @@ export function validate(obj) {
       return isStr(obj.id) && typeof obj.ban === 'boolean';
     case TYPES.END:
       return true;
+    // Overlay channel. Shallow, like the rest: `data` need only be a plain object
+    // (browser views read it defensively). pointer/ui carry an optional sender `id`
+    // the relay stamps on the guest→host hop; guest→relay forms omit it.
+    case TYPES.STATE:
+      return isObj(obj.data);
+    case TYPES.POINTER:
+      return isNum(obj.x) && isNum(obj.y) && (obj.id === undefined || isStr(obj.id));
+    case TYPES.UI:
+      return (obj.id === undefined || isStr(obj.id)) && isUiAction(obj.action);
     default:
       return false;
   }

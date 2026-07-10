@@ -27,6 +27,25 @@ test('encode/decode round-trip for every message type', () => {
     { t: 'to', id: 'g1', data: 'Y2FyZA==' },
     { t: 'drop', id: 'g1', ban: true },
     { t: 'end' },
+    // overlay-state additions
+    {
+      t: 'state',
+      data: {
+        room: 'brave-otter',
+        participants: [{ id: 'host', name: 'ian', role: 'host', color: '#e5484d' }],
+        drafts: { boxes: [] },
+        queue: [{ n: 1, author: 'g1', text: 'hi' }],
+        claudeState: 'idle',
+        paused: false,
+        pointers: { g1: { x: 0.5, y: 0.25, name: 'siddh', color: '#e5484d' } },
+        knocks: [{ id: 'k1', name: 'mallory', fp: 'SHA256:x', seen: null }],
+      },
+    },
+    { t: 'pointer', x: 0.5, y: 0.5 }, // guest→relay form (no id yet)
+    { t: 'pointer', id: 'g1', x: 0.1, y: 0.9 }, // relay→host form (labeled by sender)
+    { t: 'ui', action: { kind: 'command', text: '/role @siddh driver' } },
+    { t: 'ui', id: 'g1', action: { kind: 'admit', id: 'k1' } },
+    { t: 'ui', id: 'g1', action: { kind: 'deny', id: 'k1' } },
   ];
   for (const m of msgs) {
     assert.deepEqual(decode(encode(m)), [m], JSON.stringify(m));
@@ -108,6 +127,18 @@ test('validate accepts well-formed messages', () => {
     { t: 'drop', id: 'g1', ban: true },
     { t: 'drop', id: 'g1', ban: false },
     { t: 'end' },
+    // overlay state: data need only be a plain object (shallow, like the rest)
+    { t: 'state', data: {} },
+    { t: 'state', data: { room: 'r', participants: [], drafts: { boxes: [] }, queue: [], claudeState: 'busy', paused: true, pointers: {}, knocks: [] } },
+    // pointer: id is optional (relay stamps it on the guest→host hop)
+    { t: 'pointer', x: 0, y: 0 },
+    { t: 'pointer', x: 0.5, y: 0.5, id: 'g1' },
+    { t: 'pointer', x: 1, y: 1, id: 'g1' },
+    // ui: an admit/deny carries a target id; a command carries text
+    { t: 'ui', action: { kind: 'admit', id: 'k1' } },
+    { t: 'ui', action: { kind: 'deny', id: 'k1' } },
+    { t: 'ui', action: { kind: 'command', text: '/pause' } },
+    { t: 'ui', id: 'g1', action: { kind: 'command', text: '/role @x driver' } },
   ];
   for (const m of good) assert.equal(validate(m), true, JSON.stringify(m));
 });
@@ -135,11 +166,28 @@ test('validate rejects malformed messages', () => {
     { t: 'drop', id: 'g1' },
     { t: 'drop', id: 'g1', ban: 'yes' },
     { t: 'knock', id: 'g1', name: 'x', fp: 'a1' }, // missing seen
+    { t: 'state' }, // missing data
+    { t: 'state', data: null }, // null is not an object
+    { t: 'state', data: [] }, // an array is not a state payload
+    { t: 'state', data: 'nope' },
+    { t: 'pointer' }, // missing coordinates
+    { t: 'pointer', x: 0.5 }, // missing y
+    { t: 'pointer', x: '0.5', y: 0.5 }, // x not a number
+    { t: 'pointer', x: 0.5, y: 0.5, id: 7 }, // id, if present, must be a string
+    { t: 'ui' }, // missing action
+    { t: 'ui', action: null },
+    { t: 'ui', action: {} }, // no kind
+    { t: 'ui', action: { kind: 'nope' } }, // unknown kind
+    { t: 'ui', action: { kind: 'admit' } }, // admit needs a target id
+    { t: 'ui', action: { kind: 'deny', id: 7 } }, // target id must be a string
+    { t: 'ui', action: { kind: 'command' } }, // command needs text
+    { t: 'ui', action: { kind: 'command', text: 5 } }, // text must be a string
+    { t: 'ui', id: 7, action: { kind: 'command', text: '/pause' } }, // sender id must be a string
   ];
   for (const m of bad) assert.equal(validate(m), false, JSON.stringify(m));
 });
 
 test('TYPES exposes a constant for every message type', () => {
-  const keys = ['HELLO', 'RECLAIM', 'ROOM', 'GONE', 'KNOCK', 'ADMIT', 'DENY', 'JOINED', 'LEFT', 'KEY', 'RESIZE', 'SCREEN', 'TO', 'DROP', 'END'];
+  const keys = ['HELLO', 'RECLAIM', 'ROOM', 'GONE', 'KNOCK', 'ADMIT', 'DENY', 'JOINED', 'LEFT', 'KEY', 'RESIZE', 'SCREEN', 'TO', 'DROP', 'END', 'STATE', 'POINTER', 'UI'];
   for (const k of keys) assert.equal(typeof TYPES[k], 'string', k);
 });
