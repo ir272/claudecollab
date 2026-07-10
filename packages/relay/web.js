@@ -147,7 +147,13 @@ export function startWebDoor(ctx) {
       res.writeHead(404, { 'content-type': 'text/plain' });
       return res.end('not found');
     }
-    res.writeHead(200, { 'content-type': contentType(target), 'content-length': st.size });
+    // no-cache: the browser must revalidate on every load, or a tab keeps running a
+    // stale client (style/logic) after the host updates — confusing mid-iteration.
+    res.writeHead(200, {
+      'content-type': contentType(target),
+      'content-length': st.size,
+      'cache-control': 'no-cache',
+    });
     createReadStream(target).pipe(res);
   }
   const serveAsset = (rest, res) => serveFrom(XTERM_DIR, rest, res);

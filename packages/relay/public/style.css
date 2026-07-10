@@ -695,9 +695,10 @@ body {
   border-radius: 1px;
   animation: caret-blink 1.1s steps(1) infinite;
 }
+/* your own caret: wider and blinking, exactly like a text field's — it only ever
+   lives in the box you're focused on, so the blink marks "you type here" */
 .caret.self {
   width: 3px;
-  animation: none;
 }
 @keyframes caret-blink {
   50% {
