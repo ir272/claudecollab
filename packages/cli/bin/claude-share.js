@@ -41,6 +41,7 @@ import { Drafts } from '../src/brain/drafts.js';
 import { dispatch, classifySend, sendAllowed } from '../src/brain/gate.js';
 import { parse as parseCommand, permitted as commandPermitted, resolveMention } from '../src/brain/commands.js';
 import { build as buildCard, recapCard } from '../src/brain/card.js';
+import { foldKnock } from '../src/brain/knocks.js';
 
 function parseArgs(argv) {
   const opts = {
@@ -125,10 +126,15 @@ async function main() {
   const toasted = new Set(); // userIds already shown the viewer toast
   const knockInfo = new Map(); // id -> {name, fp} captured at knock time
   const pointers = new Map(); // userId -> {x, y} normalized 0..1 (browser cursors)
+  // The host's own browser tab(s): connection ids that authenticated with the host
+  // token. They are the HOST, not separate participants (finding 4) — mapped to
+  // HOST_ID for input attribution and never counted as a second roster entry.
+  const hostTabIds = new Set();
   const claude = { state: 'idle' };
   let armed = false; // true only while a permission ask is pending (hook-armed)
   let pendingKnocks = []; // FIFO of guest {id,name,fp,seen} awaiting the host tab's admit
-  let currentUrl = null; // the room URL (with host token) once a room is granted
+  let currentUrl = null; // the host-tab URL (WITH host token) — host's own terminal only
+  let inviteUrlStr = null; // the token-free invite URL — safe to show guests in the mirror
   const ui = { toast: null, toastTimer: null };
   let relay = null;
   let exited = false;
@@ -186,12 +192,20 @@ async function main() {
     return relay ? 'connecting…' : 'solo';
   };
 
-  const statusFields = () => ({
+  // The status line's fields. The host's OWN terminal shows the host-tab URL (carries
+  // the token); the MIRRORED variant sent to guests shows only the token-free invite
+  // URL — the host token must NEVER leave the host's own stdout (finding 1).
+  const statusFields = (mirror = false) => ({
     room: state.room,
     people: state.list().length,
     claudeState: stateSlot(),
-    url: currentUrl,
+    url: mirror ? inviteUrlStr : currentUrl,
   });
+
+  // The host's own browser tab is the host, not a separate participant (finding 4):
+  // map its connection id to HOST_ID so its keystrokes/pointer/ui are attributed to
+  // the host and it never shows up as a second roster entry (or inflates the count).
+  const actorOf = (id) => (hostTabIds.has(id) ? HOST_ID : id);
 
   // The coordinate space the band paints into. In a shared session it is the CLAMPED
   // shared size (min of participants, floor 80×24), so every participant — the host
@@ -207,8 +221,15 @@ async function main() {
   // terminals (spec §renderer clamp). Suppressed while paused.
   const mirror = (data) => {
     if (!relay || !multiplayer || state.paused) return;
-    if (state.spectators().length === 0) relay.sendScreen(data);
-    else for (const id of state.mirrorTargets()) relay.sendTo(id, data);
+    if (state.spectators().length === 0) {
+      relay.sendScreen(data); // broadcast reaches every live guest AND the host tab
+    } else {
+      for (const id of state.mirrorTargets()) relay.sendTo(id, data);
+      // The host's own tab is not a roster participant (finding 4), so it isn't in
+      // mirrorTargets — deliver to it explicitly so its mirror never freezes when a
+      // below-floor spectator forces the per-guest path.
+      for (const id of hostTabIds) relay.sendTo(id, data);
+    }
   };
 
   // ── overlay state (the browser multiplayer surface) ──────────────────────────
@@ -282,7 +303,11 @@ async function main() {
       } catch {}
     }
 
-    let painted = paint({ cols, rows, bandRows: band, ...statusFields() });
+    // Paint TWO variants of the one status line from the SAME layout: the host's own
+    // terminal gets the host-tab URL (with its token); guests get a token-free variant
+    // (the invite URL) so the host token can never leak through the mirror (finding 1).
+    let hostPaint = paint({ cols, rows, bandRows: band, ...statusFields(false) });
+    let mirrorPaint = paint({ cols, rows, bandRows: band, ...statusFields(true) });
     // Ghost-band cleanup: when the shared clamp SHRINKS, rows below the new region
     // keep stale band paint on any terminal taller than the new clamp. Erase below
     // the region BEFORE repainting (order matters: on a terminal exactly `rows`
@@ -292,11 +317,13 @@ async function main() {
     if (lastPaintRows !== null && rows < lastPaintRows) pendingClearBelow = true;
     lastPaintRows = rows;
     if (pendingClearBelow) {
-      painted = `\x1b7\x1b[${rows + 1};1H\x1b[0J\x1b8` + painted;
+      const clear = `\x1b7\x1b[${rows + 1};1H\x1b[0J\x1b8`;
+      hostPaint = clear + hostPaint;
+      mirrorPaint = clear + mirrorPaint;
       if (!state.paused) pendingClearBelow = false;
     }
-    if (stdout.isTTY) stdout.write(painted);
-    mirror(painted); // mirror() owns the relay/multiplayer/paused checks
+    if (stdout.isTTY) stdout.write(hostPaint);
+    mirror(mirrorPaint); // mirror() owns the relay/multiplayer/paused checks
     scheduleState(); // repaintBand is the brain's "something changed" chokepoint
   };
 
@@ -517,6 +544,7 @@ async function main() {
   // stale knock — then re-clamp the shared view and announce the departure. Shared
   // by a relay-signaled LEFT (wifi drop / natural disconnect) and a self-detach.
   const forgetGuest = (id) => {
+    const wasParticipant = !!state.get(id); // an admitted guest (not just a pending knock)
     const name = nameOf(id);
     state.removeGuest(id);
     drafts.removeUser(id);
@@ -524,9 +552,13 @@ async function main() {
     pendingKnocks = pendingKnocks.filter((k) => k.id !== id);
     knockInfo.delete(id);
     pointers.delete(id);
-    recomputeClamp();
-    log.event(`${name} left`);
-    showToast(`${name} left`);
+    recomputeClamp(); // repaints + refreshes the roster/count either way
+    // Only announce a departure for someone who actually joined — a superseded pending
+    // knock (deduped reconnect / timeout) or a closing host tab never "left" (finding 3).
+    if (wasParticipant) {
+      log.event(`${name} left`);
+      showToast(`${name} left`);
+    }
   };
 
   // ── input effect application (host + guests, one table via the gate) ─────────
@@ -561,6 +593,53 @@ async function main() {
   };
 
   // ── relay client ─────────────────────────────────────────────────────────────
+  // Admit a knock AND send its catch-up in ONE synchronous burst (finding 2): the
+  // join context card, then the CURRENT screen snapshot, straight after ADMIT. Because
+  // nothing awaits between them, no pty frame can interleave — so on the wire the order
+  // is ADMIT, card, snapshot, then any live frame the host mirrors afterward. The
+  // joiner therefore applies the snapshot BEFORE any queued live frame and sees exactly
+  // one clean copy of the screen (the old code sent the catch-up a round-trip later, in
+  // onJoin, so live frames emitted during that window slipped in first — the garble).
+  const admitAndCatchUp = (r, knock) => {
+    r.admit(knock.id);
+    // The host's own tab IS the host, not a room member (finding 4): no roster entry,
+    // no context card. It still mirrors the live screen, so it does get the snapshot.
+    if (knock.fp === `webhost:${hostToken}`) {
+      hostTabIds.add(knock.id);
+      knockInfo.set(knock.id, { name: knock.name, fp: knock.fp, role: 'host' });
+      if (!state.paused) {
+        try {
+          const snap = snapshot.get();
+          if (snap) r.sendTo(knock.id, snap);
+        } catch {}
+      }
+      return;
+    }
+    const info = knockInfo.get(knock.id) ?? { name: knock.name, fp: knock.fp };
+    // addGuest restores the role a returning fingerprint last held this session
+    // (spec §identity); a new/keyless guest takes the room default (opts.guests).
+    const g = state.addGuest(knock.id, { name: info.name, fp: info.fp, role: info.role ?? opts.guests });
+    log.event(`${g.name} joined as ${g.role}`);
+    // The join context card lands in the guest's own scrollback first (spec §join card).
+    try {
+      const card = buildCard(state, log, { joinerId: knock.id, claudeState: claude.state });
+      r.sendTo(knock.id, card.replace(/\n/g, '\r\n') + '\r\n');
+    } catch {}
+    // Then the CURRENT Claude screen so the joiner sees it live immediately.
+    try {
+      if (state.paused) {
+        // The snapshot is exactly what /pause promises to hide — a joiner during a
+        // pause gets the hold card, and the live screen on /resume.
+        r.sendTo(knock.id, '\r\n⏸ sharing is paused — the live screen will appear when the host resumes\r\n');
+      } else {
+        const snap = snapshot.get();
+        if (snap) r.sendTo(knock.id, snap);
+      }
+    } catch {}
+    showToast(`${g.name} joined as ${g.role} ${ROLE_GLYPH[g.role] ?? ''}`);
+    recomputeClamp();
+  };
+
   // Resolve a specific pending knock by id. Answered ONLY from the host's browser tab
   // (a {t:'ui'} admit/deny button); state.knocks shows the host all pending knocks.
   // The terminal has no y/n knock path anymore (post-dogfood verdict).
@@ -568,7 +647,7 @@ async function main() {
     const idx = pendingKnocks.findIndex((k) => k.id === knockId);
     if (idx === -1 || !relay) return;
     const [knock] = pendingKnocks.splice(idx, 1);
-    if (admitYes) relay.admit(knock.id);
+    if (admitYes) admitAndCatchUp(relay, knock);
     else {
       relay.deny(knock.id);
       showToast(`declined ${knock.name}`);
@@ -643,6 +722,7 @@ async function main() {
       const reclaimed = state.room === code; // we already held this exact code → reclaim
       state.setRoom(code);
       currentUrl = hostRoomUrl(code); // the host's own tab URL lives in the status line
+      inviteUrlStr = inviteRoomUrl(code); // the token-free variant the mirror shows guests
       if (reclaimed) {
         showToast('reconnected — room reclaimed', 6000);
         return;
@@ -659,50 +739,33 @@ async function main() {
     });
     r.onKnock((knock) => {
       // The host's own browser tab knocks with fp `webhost:<token>`. Auto-admit it as
-      // host — it is the one knock answered with no host tab present yet, and it is
-      // how the host gets in to answer everyone else's knocks. It never shows up as a
-      // pending knock the host has to admit.
+      // host — it is the one knock answered with no explicit ui action, and it is how
+      // the host gets in to answer everyone else's knocks. It is never a pending knock.
       if (knock.fp === `webhost:${hostToken}`) {
-        knockInfo.set(knock.id, { name: knock.name, fp: knock.fp, role: 'host' });
-        r.admit(knock.id);
+        admitAndCatchUp(r, knock);
         return;
       }
+      // Dedup by fingerprint: a WS reconnect during the join flow re-knocks with a new
+      // connection id but the SAME fp — replace the stale card, don't stack a duplicate
+      // (finding 3). Deny the superseded connection so it can't be admitted later.
+      const { pending, replaced } = foldKnock(pendingKnocks, knock);
+      pendingKnocks = pending;
+      for (const staleId of replaced) {
+        r.deny(staleId);
+        knockInfo.delete(staleId);
+      }
       knockInfo.set(knock.id, { name: knock.name, fp: knock.fp });
-      pendingKnocks.push(knock);
       repaintBand();
     });
-    r.onJoin((id) => {
-      const info = knockInfo.get(id) ?? { name: 'guest', fp: null };
-      // addGuest restores the role a returning fingerprint last held this session
-      // (spec §identity). The host's browser tab carries role 'host' (set at knock
-      // time); a new/keyless guest takes the room default (opts.guests).
-      const g = state.addGuest(id, { name: info.name, fp: info.fp, role: info.role ?? opts.guests });
-      log.event(`${g.name} joined as ${g.role}`);
-      // The join context card lands in the guest's own scrollback before the
-      // live mirror attaches (spec §join context card).
-      try {
-        const card = buildCard(state, log, { joinerId: id, claudeState: claude.state });
-        r.sendTo(id, card.replace(/\n/g, '\r\n') + '\r\n');
-      } catch {}
-      // Right after the card, replay the CURRENT Claude screen so the joiner sees
-      // the live screen immediately — not blank space until the next frame. The
-      // mirror only forwards frames produced after this join, so without the
-      // snapshot a guest admitted while Claude is idle would see nothing (finding 1).
-      try {
-        if (state.paused) {
-          // The snapshot is exactly what /pause promises to hide — a joiner during
-          // a pause gets the hold card, and the live screen on /resume.
-          r.sendTo(id, '\r\n⏸ sharing is paused — the live screen will appear when the host resumes\r\n');
-        } else {
-          const snap = snapshot.get();
-          if (snap) r.sendTo(id, snap);
-        }
-      } catch {}
-      showToast(`${g.name} joined as ${g.role} ${ROLE_GLYPH[g.role] ?? ''}`);
-      recomputeClamp();
+    r.onJoin(() => {
+      // The admit action (admitAndCatchUp) already added the participant and sent the
+      // catch-up (card + snapshot) synchronously, so the snapshot is guaranteed to be
+      // on the wire before any live frame (finding 2). JOINED is just the relay's
+      // confirmation; the RESIZE that follows it drives the clamp (see onResize).
     });
     r.onLeave((id) => {
       guestPartitioners.delete(id);
+      hostTabIds.delete(id); // a host tab closing is not a roster departure
       forgetGuest(id);
     });
     r.onKey(({ id, data }) => {
@@ -711,15 +774,17 @@ async function main() {
       // dropped (v1: guest mouse doesn't drive the shared session).
       const { human } = guestPartitioner(id)(data);
       if (!human) return;
-      const role = state.roleOf(id) ?? 'viewer';
-      applyInput(id, dispatch(id, role, Buffer.from(human, 'binary'), { armed, toasted }));
+      const actor = actorOf(id); // a host tab drives Claude AS the host (finding 4)
+      const role = state.roleOf(actor) ?? 'viewer';
+      applyInput(actor, dispatch(actor, role, Buffer.from(human, 'binary'), { armed, toasted }));
     });
     r.onPointer(({ id, x, y }) => {
-      if (!id || !state.get(id)) return; // only a known participant's cursor
-      pointers.set(id, { x, y });
+      const actor = actorOf(id);
+      if (!actor || !state.get(actor)) return; // only a known participant's cursor
+      pointers.set(actor, { x, y });
       scheduleState(); // rebroadcast via state.pointers (spec); no band repaint needed
     });
-    r.onUi(({ id, action }) => handleUi(id, action));
+    r.onUi(({ id, action }) => handleUi(actorOf(id), action));
     r.onResize(({ id, cols, rows }) => {
       state.setSize(id, cols, rows);
       if (state.belowFloor(id)) {

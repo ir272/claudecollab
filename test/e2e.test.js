@@ -285,11 +285,16 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   const hostTab = await connectHostTab(webPort, { code, token });
   t.after(() => hostTab.close());
   await hostTab.onJoined();
-  hostTab.resize(120, 40); // keep the shared clamp comfortably above the 80x24 floor
+  hostTab.resize(120, 40); // the host tab's own xterm size (not a roster participant)
   const s0 = await hostTab.waitForState((s) => s.room === code);
-  const self = s0.participants.find((p) => p.id === hostTab.selfId);
-  assert.ok(self, 'the host tab is a participant in the overlay state');
-  assert.equal(self.role, 'host', 'the host tab was auto-admitted as host');
+  // The host terminal + the host tab are ONE roster entry (finding 4): the tab does
+  // NOT add a second participant. Before any guest, the roster is just the host.
+  const hostP = s0.participants.find((p) => p.role === 'host');
+  assert.ok(hostP, 'the host is present in the overlay roster');
+  // Exactly ONE host entry (the terminal identity); the tab collapses into it and is
+  // never a second "host (you)" beside it (finding 4).
+  assert.equal(s0.participants.filter((p) => p.role === 'host').length, 1, 'exactly one host entry');
+  assert.equal(s0.participants.length, 1, 'the host tab does not add a second participant (findings 3, 4)');
 
   // ── guest A: named key, knocks → the host tab admits from the browser ───────
   const a = await connectGuest(port, { code, privateKey: newKey() });
@@ -306,9 +311,11 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   hostTab.admit(knock.id); // the host admits from the browser, not the terminal
   await a.waitFor('session so far'); // the join context card lands in A's scrollback
   await a.waitFor("── you're live ──");
-  const aId = (await hostTab.waitForState((s) => s.participants.some((p) => p.name === 'a'))).participants.find(
-    (p) => p.name === 'a',
-  ).id;
+  const sA = await hostTab.waitForState((s) => s.participants.some((p) => p.name === 'a'));
+  // Roster + count reflect DISTINCT humans: the host (tab collapsed in) + guest A = 2,
+  // never a phantom (findings 3, 4).
+  assert.equal(sA.participants.length, 2, 'roster is host + guest A — the tab is not double-counted');
+  const aId = sA.participants.find((p) => p.name === 'a').id;
 
   // ── the host tab promotes A to prompter (default guest role here is viewer) ─
   hostTab.command('/role @a prompter');
@@ -341,6 +348,14 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   // …and going idle drains the queue in order (fail-closed drain fired on 'idle').
   await host.waitFor('[claude] prompt: use tailwind for all of it');
   await a.waitFor('[claude] prompt: use tailwind for all of it');
+
+  // ── finding 1: the host token must NEVER reach a guest's mirror ──────────────
+  // A has received the status-line band mirrored many times by now (via SCREEN). The
+  // host's OWN stdout carries the host-tab URL (with the token); the mirror must carry
+  // only the token-free invite URL.
+  assert.ok(host.get().includes(`?host=${token}`), 'the host terminal DOES show its own host URL');
+  assert.ok(!a.getOut().includes(token), 'the host token never leaks into the ssh guest mirror');
+  assert.ok(!a.getOut().includes('?host='), 'no host-token query reaches the guest mirror at all');
 
   // ── the host tab kicks A ─────────────────────────────────────────────────────
   hostTab.command('/kick @a');

@@ -493,7 +493,10 @@ function main() {
     if (!msg || typeof msg !== 'object') return;
     switch (msg.t) {
       case 'joined':
-        selfId = msg.id;
+        // A host tab IS the host (the brain maps it to HOST_ID and never adds it as a
+        // second participant — finding 4), so adopt the host's roster identity: the
+        // view then finds "me" as the host, grants host caps, and shows one host entry.
+        selfId = loc.isHostTab ? 'host' : msg.id;
         goLive();
         break;
       case 'state':
