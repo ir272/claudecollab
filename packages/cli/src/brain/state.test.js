@@ -150,6 +150,36 @@ test('a below-floor participant spectates and does not shrink the shared view', 
   assert.deepEqual(s.clamp(), { cols: 120, rows: 40 });
 });
 
+test('mirrorTargets excludes below-floor guests; spectators lists them', () => {
+  const s = new RoomState({ hostSize: { cols: 120, rows: 40 } });
+  s.addGuest('big', { name: 'big' });
+  s.setSize('big', 100, 30); // above the floor → mirrored
+  s.addGuest('small', { name: 'small' });
+  s.setSize('small', 60, 20); // below the floor → spectates
+  s.addGuest('unknown', { name: 'unknown' }); // no size yet → mirrored (not below floor)
+  assert.deepEqual(s.mirrorTargets().sort(), ['big', 'unknown']);
+  assert.deepEqual(s.spectators(), ['small']);
+  // The host is never a mirror target or a spectator (guests only).
+  assert.ok(!s.mirrorTargets().includes(HOST_ID));
+});
+
+test('mirrorTargets and spectators are empty in a solo room', () => {
+  const s = new RoomState();
+  assert.deepEqual(s.mirrorTargets(), []);
+  assert.deepEqual(s.spectators(), []);
+});
+
+test('a spectator moves into mirrorTargets once it resizes above the floor', () => {
+  const s = new RoomState({ hostSize: { cols: 120, rows: 40 } });
+  s.addGuest('g', { name: 'g' });
+  s.setSize('g', 40, 12);
+  assert.deepEqual(s.spectators(), ['g']);
+  assert.deepEqual(s.mirrorTargets(), []);
+  s.setSize('g', 90, 30); // user made the terminal bigger
+  assert.deepEqual(s.spectators(), []);
+  assert.deepEqual(s.mirrorTargets(), ['g']);
+});
+
 test('clamp falls back to the floor when no participant reports a size', () => {
   const s = new RoomState();
   assert.deepEqual(s.clamp(), { cols: FLOOR_COLS, rows: FLOOR_ROWS });

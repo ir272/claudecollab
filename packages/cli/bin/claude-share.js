@@ -192,11 +192,22 @@ async function main() {
   // draft boxes/cursors, the attributed queue, the status line, knocks, and every
   // event toast (joins/leaves/kicks/role changes, the mode-change warning banner,
   // recap notices). Suppressed while paused: guests hold on the pause card.
+  // Send a shared-view frame to the guests who should see it. When everyone is at or
+  // above the 80×24 floor this is a single broadcast; when at least one guest is below
+  // the floor we deliver per-guest to the eligible ones only, so a below-floor guest
+  // stays parked on the spectate hint instead of receiving a mirror sized for bigger
+  // terminals (spec §renderer clamp). Suppressed while paused.
+  const mirror = (data) => {
+    if (!relay || !multiplayer || state.paused) return;
+    if (state.spectators().length === 0) relay.sendScreen(data);
+    else for (const id of state.mirrorTargets()) relay.sendTo(id, data);
+  };
+
   const repaintBand = () => {
     if (stdout.isTTY) stdout.write(paint(bandState(stdout.columns || 80, stdout.rows || 24)));
     if (relay && multiplayer && !state.paused) {
       const { cols, rows } = state.clamp();
-      relay.sendScreen(paint(bandState(cols, rows)));
+      mirror(paint(bandState(cols, rows)));
     }
   };
 
@@ -225,7 +236,7 @@ async function main() {
   const broadcast = (text) => {
     const framed = '\r\n' + String(text).replace(/\r?\n/g, '\r\n') + '\r\n';
     if (stdout.isTTY) stdout.write(framed);
-    if (relay && !state.paused) relay.sendScreen(framed);
+    mirror(framed);
     repaintBand();
   };
 
@@ -573,7 +584,7 @@ async function main() {
   // redraws on the frame boundary so it never smears mid-repaint.
   pty.onFrame((chunk) => {
     stdout.write(chunk);
-    if (relay && !state.paused) relay.sendScreen(chunk);
+    mirror(chunk);
     repaintBand();
   });
   pty.onExit(({ exitCode }) => cleanup(exitCode ?? 0));

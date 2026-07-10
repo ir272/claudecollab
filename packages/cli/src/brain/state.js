@@ -169,6 +169,20 @@ export class RoomState {
   }
 
   /**
+   * Guest ids eligible for the live mirror — at or above the 80×24 floor. Below-floor
+   * guests are excluded: they spectate on a "make your terminal bigger" hint instead
+   * of receiving a shared view sized for larger terminals (spec §renderer clamp).
+   */
+  mirrorTargets() {
+    return this.guests().filter((p) => !this.belowFloor(p.id)).map((p) => p.id);
+  }
+
+  /** Guest ids parked on the spectate hint (below the floor). */
+  spectators() {
+    return this.guests().filter((p) => this.belowFloor(p.id)).map((p) => p.id);
+  }
+
+  /**
    * The shared view dimensions: the component-wise minimum over participants that
    * meet the floor, then raised to the 80×24 floor. Below-floor participants are
    * excluded (they spectate) and participants of unknown size do not constrain it.
