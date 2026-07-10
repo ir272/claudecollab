@@ -149,6 +149,43 @@ test('after sending, the same user can start a fresh draft by typing', () => {
   assert.equal(only(d).text, 'two');
 });
 
+// ── starting a fresh draft (Ctrl+N) ──────────────────────────────────────────
+
+const CTRL_N = '\x0e'; // start a new draft
+
+test('Ctrl+N breaks a co-editor out into their own fresh empty draft', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'shared thought');
+  const id = d.activeBox('ian').id;
+  d.focus('james', id); // james is co-writing ian's box
+  assert.equal(d.boxes[0].cursors.size, 2);
+
+  const eff = d.keystroke('james', CTRL_N);
+  assert.equal(eff.changed, true);
+  // ian's box is untouched (still has content + ian's cursor); james now owns a new box.
+  assert.equal(d.boxes.length, 2);
+  assert.equal(d.boxes[0].id, id);
+  assert.equal(d.boxes[0].text, 'shared thought');
+  assert.ok(d.boxes[0].cursors.has('ian') && !d.boxes[0].cursors.has('james'));
+  const jamesBox = d.activeBox('james');
+  assert.notEqual(jamesBox.id, id);
+  assert.equal(jamesBox.text, '');
+  // …and james types into the fresh draft, not the shared one.
+  d.keystroke('james', 'my own idea');
+  assert.equal(d.activeBox('james').text, 'my own idea');
+  assert.equal(d.boxes[0].text, 'shared thought');
+});
+
+test('Ctrl+N with an empty focused draft leaves the user in a (fresh) empty draft', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'abc');
+  d.keystroke('ian', ENTER); // sent; ian now has no box
+  const eff = d.keystroke('ian', CTRL_N);
+  assert.equal(eff.changed, true);
+  assert.equal(d.boxes.length, 1);
+  assert.equal(d.activeBox('ian').text, '');
+});
+
 // ── multi-cursor co-editing ─────────────────────────────────────────────────
 
 test('a user can move their cursor into an existing draft and co-write it', () => {

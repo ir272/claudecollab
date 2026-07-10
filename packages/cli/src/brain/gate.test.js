@@ -61,6 +61,14 @@ test('Ctrl+C detaches a guest but is normal input for the host', () => {
   assert.deepEqual(d('u', 'host', CTRL_C), { kind: 'pty', data: CTRL_C });
 });
 
+test('Ctrl+N (start a new draft) reaches the composer for prompter+, blocked for viewer', () => {
+  const CTRL_N = '\x0e';
+  for (const role of ['prompter', 'driver', 'host']) {
+    assert.deepEqual(d('u', role, CTRL_N), { kind: 'draft', bytes: CTRL_N }, role);
+  }
+  assert.equal(d('u', 'viewer', CTRL_N).kind, 'toast');
+});
+
 test('mode flip (Shift+Tab) is driver+ only, dropped for prompter/viewer', () => {
   assert.deepEqual(d('u', 'driver', SHIFT_TAB), { kind: 'pty', data: SHIFT_TAB });
   assert.deepEqual(d('u', 'host', SHIFT_TAB), { kind: 'pty', data: SHIFT_TAB });

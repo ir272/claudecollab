@@ -19,6 +19,8 @@
 //   • An empty draft never sends (nothing queues by accident).
 //   • Standard editing keymap: shift+enter newline, word-jump, kill-line, ctrl+w,
 //     home/end — decoded from the raw escape bytes a terminal actually emits.
+//   • Ctrl+N starts a fresh draft: a participant whose cursor sits in a co-authored
+//     box can break out into their own new empty draft (the "+ start a new draft").
 //   • Typing "@" at a word boundary opens a mention autocomplete (derived state,
 //     read via mentionOf / the keystroke effect; completeMention fills it in).
 
@@ -40,6 +42,9 @@ const SEQUENCES = [
   // Enter → send
   ['\r', 'enter'],
   ['\n', 'enter'],
+  // Ctrl+N → start a fresh draft (the "[ + start a new draft ]" affordance): break
+  // out of a co-authored box into your own new empty draft (spec §draft lines).
+  ['\x0e', 'newdraft'],
   // word operations (option/alt + arrow, and ctrl+arrow) and option+backspace
   ['\x1bb', 'wordleft'],
   ['\x1bf', 'wordright'],
@@ -273,6 +278,9 @@ export class Drafts {
     switch (type) {
       case 'enter':
         return this.#enter(userId);
+      case 'newdraft':
+        this.startDraft(userId);
+        return { changed: true };
       case 'newline':
         this.#insert(userId, ['\n']);
         return { changed: true };

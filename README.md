@@ -74,6 +74,10 @@ Roles are set by the host with `/role @name driver` and shown to the whole room.
 
 Host commands: `/role @name <role>` · `/kick @name` · `/pause` / `/resume` · `/recap` · `/end`.
 
+## Composing together
+
+Each draft is its own author-tagged box. **Enter** sends only the box your cursor is in; move your cursor into someone else's box to co-write it. **Ctrl+N** starts a fresh draft of your own (the "+ start a new draft" affordance) — handy when your cursor is parked in a box someone else is writing. Standard editing keys work inside a draft (shift+enter for a newline, word-jump, kill-line, home/end).
+
 ## One thing to really understand
 
 **A guest prompt is a real action.** It runs against your Claude — real edits, real commands. Admitting someone to type = trusting them to drive your machine under the current mode. The relay also *sees everything* on your screen (treat a room like a screen-share, not a vault). The host has `/pause` for sensitive moments and `/end` to close the room (optionally saving a `session.md` of who typed what).
