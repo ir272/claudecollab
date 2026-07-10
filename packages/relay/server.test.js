@@ -17,8 +17,19 @@ import { startRelay } from './server.js';
 import { encode, Decoder, TYPES } from '../shared/protocol.js';
 
 const { Client, utils } = ssh2;
-const { generateKeyPairSync } = utils;
-const newKey = () => generateKeyPairSync('ed25519').private;
+const { generateKeyPairSync, parseKey } = utils;
+
+// ssh2's generateKeyPairSync occasionally emits a key its own parser rejects
+// ("Malformed OpenSSH private key") — a known upstream flake that surfaces under
+// load. Validate with parseKey and regenerate so it can't destabilize this
+// integration test (mirrors test/e2e.test.js).
+function newKey() {
+  for (let i = 0; i < 8; i++) {
+    const priv = generateKeyPairSync('ed25519').private;
+    if (!(parseKey(priv) instanceof Error)) return priv;
+  }
+  return generateKeyPairSync('ed25519').private;
+}
 
 // A host client: opens a no-pty channel and talks protocol. `next(pred)` resolves
 // with the first (queued or future) decoded message matching `pred`. Pass a fixed
@@ -103,7 +114,7 @@ const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
 
 test('relay: knock → admit → labeled forwarding → broadcast → kick ban', async (t) => {
   const keyPath = join(tmpdir(), `cs-relay-${randomUUID()}.key`);
-  writeFileSync(keyPath, generateKeyPairSync('ed25519').private, { mode: 0o600 });
+  writeFileSync(keyPath, newKey(), { mode: 0o600 });
   t.after(() => {
     try {
       rmSync(keyPath);

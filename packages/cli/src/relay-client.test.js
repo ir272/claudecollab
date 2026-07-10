@@ -12,8 +12,19 @@ import { startRelay } from '../../relay/server.js';
 import { connectRelay, parseRelayUrl } from './relay-client.js';
 
 const { Client, utils } = ssh2;
-const { generateKeyPairSync } = utils;
-const newKey = () => generateKeyPairSync('ed25519').private;
+const { generateKeyPairSync, parseKey } = utils;
+
+// ssh2's generateKeyPairSync occasionally emits a key its own parser rejects
+// ("Malformed OpenSSH private key") — a known upstream flake that surfaces under
+// load. Validate with parseKey and regenerate so it can't destabilize these
+// integration tests (mirrors test/e2e.test.js).
+function newKey() {
+  for (let i = 0; i < 8; i++) {
+    const priv = generateKeyPairSync('ed25519').private;
+    if (!(parseKey(priv) instanceof Error)) return priv;
+  }
+  return generateKeyPairSync('ed25519').private;
+}
 
 // Resolve the first time a registered callback fires.
 const once = (register) => new Promise((res) => register(res));
