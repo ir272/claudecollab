@@ -393,15 +393,15 @@ function main() {
   const composerHint = $('#composer-hint');
   const newDraftBtn = $('#new-draft');
   const viewerNote = $('#viewer-note');
-  const hostPanel = $('#host-panel');
+  const hostControls = $('#host-controls');
   const knocksBox = $('#knocks');
-  const rosterBox = $('#roster');
+  const avatarsBox = $('#avatars');
+  const popover = $('#popover');
   const copyInviteBtn = $('#copy-invite');
   const pauseBtn = $('#pause-btn');
   const endBtn = $('#end-btn');
   const endConfirm = $('#end-confirm');
   const sbRoom = $('#sb-room');
-  const sbPeople = $('#sb-people');
   const sbRole = $('#sb-role');
 
   // ── join screen ──────────────────────────────────────────────────────────────
@@ -558,11 +558,11 @@ function main() {
       lineHeight: 1.1,
       scrollback: 5000,
       theme: {
-        background: '#14161a',
-        foreground: '#d7dbe0',
+        background: '#0a0c12',
+        foreground: '#e8ecf4',
         cursor: '#e8a33d',
         selectionBackground: 'rgba(232,163,61,0.28)',
-        black: '#14161a',
+        black: '#0a0c12',
         brightBlack: '#5b6472',
       },
     });
@@ -701,6 +701,7 @@ function main() {
     endStep = 1;
     renderEndConfirm();
   });
+  // End confirms in place: the ■ chip swaps to its confirm steps right in the strip.
   function renderEndConfirm() {
     endConfirm.innerHTML = '';
     if (endStep === 0) {
@@ -711,32 +712,28 @@ function main() {
     endBtn.hidden = true;
     endConfirm.hidden = false;
     if (endStep === 1) {
-      endConfirm.append(el('p', 'confirm-q', 'End the session for everyone?'));
-      const cancel = el('button', 'btn ghost', 'Cancel');
-      const go = el('button', 'btn danger', 'End session');
-      cancel.onclick = () => {
-        endStep = 0;
-        renderEndConfirm();
-      };
+      endConfirm.append(el('span', null, 'End for everyone?'));
+      const go = el('button', 'kbtn yes', 'End');
+      const cancel = el('button', 'kbtn no', 'Cancel');
       go.onclick = () => {
         endStep = 2;
         renderEndConfirm();
       };
-      const row = el('div', 'confirm-row');
-      row.append(cancel, go);
-      endConfirm.append(row);
+      cancel.onclick = () => {
+        endStep = 0;
+        renderEndConfirm();
+      };
+      endConfirm.append(go, cancel);
     } else {
-      endConfirm.append(el('p', 'confirm-q', 'Save a session summary to session.md?'));
-      const skip = el('button', 'btn ghost', 'End without saving');
-      const save = el('button', 'btn danger', 'Save & end');
+      endConfirm.append(el('span', null, 'Save session.md?'));
+      const save = el('button', 'kbtn yes', 'Save & end');
+      const skip = el('button', 'kbtn no', 'Just end');
       // The save choice is resolved by the host CLI's /end confirmation; the browser
       // fires /end either way (the two-step gate lives here so the host never has to
       // touch the terminal). Both buttons end the room.
-      skip.onclick = () => finishEnd();
       save.onclick = () => finishEnd();
-      const row = el('div', 'confirm-row');
-      row.append(skip, save);
-      endConfirm.append(row);
+      skip.onclick = () => finishEnd();
+      endConfirm.append(save, skip);
     }
   }
   function finishEnd() {
@@ -756,15 +753,16 @@ function main() {
     renderQueue(v);
     renderComposer(v);
     renderCursors(v);
-    renderHostPanel(v);
+    renderHeader(v);
   }
 
   function renderStatusbar(v) {
     sbRoom.textContent = v.room ? v.room : '—';
-    const n = v.participants.length;
-    sbPeople.textContent = `${n} ${n === 1 ? 'person' : 'people'}`;
-    sbRole.textContent = v.role;
-    sbRole.style.setProperty('--role-color', v.me?.color || '#9aa4b2');
+    sbRole.innerHTML = '';
+    sbRole.append('you: ');
+    const b = el('b', null, v.role);
+    b.style.setProperty('--c', v.me?.color || '#9aa4b2');
+    sbRole.append(b);
   }
 
   function renderClaudeChip(v) {
@@ -792,7 +790,6 @@ function main() {
         pill.style.setProperty('--c', a.color);
         border.append(pill);
       }
-      if (d.focusedBySelf) border.append(el('span', 'send-hint', '⏎ sends this draft'));
       const body = el('div', 'draft-body');
       for (const seg of d.segments) {
         if (seg.type === 'text') {
@@ -805,6 +802,7 @@ function main() {
         }
       }
       box.append(border, body);
+      if (d.focusedBySelf) box.append(el('span', 'send-hint', '↵ sends'));
       trayDrafts.append(box);
     }
   }
@@ -860,6 +858,7 @@ function main() {
       const pill = node.querySelector('.cursor-pill');
       pill.textContent = p.name;
       pill.style.background = p.color;
+      pill.style.setProperty('--c', p.color);
       node.style.transform = `translate(${(p.x * rect.width).toFixed(1)}px, ${(p.y * rect.height).toFixed(1)}px)`;
     }
     for (const [id, node] of cursorEls) {
@@ -870,61 +869,89 @@ function main() {
     }
   }
 
-  function renderHostPanel(v) {
-    const show = loc.isHostTab || v.isHost;
-    hostPanel.hidden = !show;
-    if (!show) return;
-
-    // Knock cards.
-    knocksBox.innerHTML = '';
-    if (v.knocks.length === 0) {
-      knocksBox.append(el('div', 'panel-empty', 'No one waiting.'));
-    }
-    for (const k of v.knocks) {
-      const card = el('div', 'knock-card');
-      const info = el('div', 'knock-info');
-      info.append(el('div', 'knock-name', k.name));
-      info.append(el('div', 'knock-meta', `${k.seenLabel}  ·  ${k.shortFp}`));
-      const actions = el('div', 'knock-actions');
-      const admit = el('button', 'btn primary', 'Admit');
-      const deny = el('button', 'btn ghost', 'Deny');
-      admit.onclick = () => sendMsg({ t: 'ui', action: { kind: 'admit', id: k.id } });
-      deny.onclick = () => sendMsg({ t: 'ui', action: { kind: 'deny', id: k.id } });
-      actions.append(admit, deny);
-      card.append(info, actions);
-      knocksBox.append(card);
-    }
-
-    // Roster with role controls + kick.
-    rosterBox.innerHTML = '';
+  // The header owns the roster (avatar cluster) and, for the host, knock chips +
+  // the Invite/Pause/End controls. There is no sidebar (design v2.1).
+  function renderHeader(v) {
+    // Avatar cluster: one colored identity dot per participant. Click → popover.
+    avatarsBox.innerHTML = '';
     for (const p of v.participants) {
-      const row = el('div', 'roster-row');
-      const dot = el('span', 'roster-dot');
-      dot.style.background = p.color;
-      const nm = el('span', 'roster-name', p.name + (p.isSelf ? ' (you)' : ''));
-      row.append(dot, nm);
-      if (p.role === 'host' || p.isSelf) {
-        row.append(el('span', 'roster-role', p.role));
-      } else {
-        const sel = el('select', 'role-select');
-        for (const r of ['viewer', 'prompter', 'driver']) {
-          const opt = el('option', null, r);
-          opt.value = r;
-          if (r === p.role) opt.selected = true;
-          sel.append(opt);
-        }
-        // Target by id, not @name: names are guest-claimed and non-unique (finding 4).
-        sel.onchange = () => sendMsg(roleAction(p.id, sel.value));
-        const kick = el('button', 'btn tiny ghost', 'Kick');
-        kick.onclick = () => sendMsg(kickAction(p.id));
-        row.append(sel, kick);
-      }
-      rosterBox.append(row);
+      const av = el('button', 'av', (p.name || '?').slice(0, 1).toUpperCase());
+      av.type = 'button';
+      av.style.setProperty('--c', p.color);
+      av.title = p.name + (p.isSelf ? ' (you)' : '') + ' · ' + p.role;
+      av.onclick = (e) => {
+        e.stopPropagation();
+        openPopover(av, p, v);
+      };
+      avatarsBox.append(av);
     }
 
-    pauseBtn.textContent = v.paused ? 'Resume sharing' : 'Pause sharing';
+    const host = loc.isHostTab || v.isHost;
+    hostControls.hidden = !host;
+
+    // Knock chips: amber-ringed, inline Admit/Deny — the one loud thing on screen.
+    knocksBox.innerHTML = '';
+    if (host) {
+      for (const k of v.knocks) {
+        const chip = el('span', 'knock-chip');
+        chip.append('🚪 ');
+        chip.append(el('span', 'kname', k.name));
+        chip.append(el('span', null, ' is knocking'));
+        chip.append(el('span', 'kmeta', k.seenLabel));
+        const admit = el('button', 'kbtn yes', 'Admit');
+        const deny = el('button', 'kbtn no', 'Deny');
+        admit.title = deny.title = `${k.seenLabel} · ${k.shortFp}`;
+        admit.onclick = () => sendMsg({ t: 'ui', action: { kind: 'admit', id: k.id } });
+        deny.onclick = () => sendMsg({ t: 'ui', action: { kind: 'deny', id: k.id } });
+        chip.append(admit, deny);
+        knocksBox.append(chip);
+      }
+    }
+
+    pauseBtn.title = v.paused ? 'Resume sharing' : 'Pause sharing';
     pauseBtn.classList.toggle('active', v.paused);
   }
+
+  // Avatar popover: the host manages a person here (role chips + kick); everyone
+  // else just sees who the dot is. One popover at a time; outside click closes.
+  function openPopover(anchor, p, v) {
+    popover.innerHTML = '';
+    const head = el('div');
+    const nm = el('span', 'pop-name', p.name + (p.isSelf ? ' (you)' : ''));
+    nm.style.setProperty('--c', p.color);
+    head.append(nm, el('span', 'pop-role', p.role));
+    popover.append(head);
+    const canManage = (loc.isHostTab || v.isHost) && p.role !== 'host' && !p.isSelf;
+    if (canManage) {
+      const row = el('div', 'pop-row');
+      for (const r of ['viewer', 'prompter', 'driver']) {
+        const b = el('button', 'ctrl tiny' + (r === p.role ? ' active' : ''), r);
+        // Target by id, not @name: names are guest-claimed and non-unique (finding 4).
+        b.onclick = () => {
+          sendMsg(roleAction(p.id, r));
+          closePopover();
+        };
+        row.append(b);
+      }
+      popover.append(row);
+      const kick = el('button', 'ctrl tiny end pop-kick', 'Kick from room');
+      kick.onclick = () => {
+        sendMsg(kickAction(p.id));
+        closePopover();
+      };
+      popover.append(kick);
+    }
+    const r = anchor.getBoundingClientRect();
+    popover.hidden = false;
+    popover.style.left = Math.min(r.left, window.innerWidth - 200) + 'px';
+    popover.style.top = r.bottom + 8 + 'px';
+  }
+  function closePopover() {
+    popover.hidden = true;
+  }
+  document.addEventListener('mousedown', (e) => {
+    if (!popover.hidden && !popover.contains(e.target)) closePopover();
+  });
 
   // ── wire the join form and boot ────────────────────────────────────────────
   knockBtn.addEventListener('click', beginKnock);

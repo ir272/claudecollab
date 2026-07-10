@@ -12,7 +12,7 @@
     <!-- ── join / knock / waiting ─────────────────────────────────────────── -->
     <section id="join" class="screen">
       <div class="join-card">
-        <div class="brand"><span class="brand-mark">✦</span> claude&#8288;-&#8288;share</div>
+        <div class="brand"><span class="brand-text">✦ claude&#8288;-&#8288;share</span></div>
         <p class="tagline">Jump into a live Claude Code session — together.</p>
 
         <form id="join-form" autocomplete="off">
@@ -38,13 +38,24 @@
 
     <!-- ── live session ───────────────────────────────────────────────────── -->
     <section id="live" class="screen live" hidden>
-      <header id="statusbar">
-        <span class="sb-brand">✦ claude-share</span>
-        <span class="sb-item">room <b id="sb-room">—</b></span>
-        <span class="sb-item" id="sb-people">—</span>
-        <span class="sb-spacer"></span>
-        <span class="sb-role" id="sb-role">viewer</span>
+      <!-- one slim strip; everything administrative lives here (no sidebar) -->
+      <header id="topbar" class="topbar">
+        <span class="brand-text">✦ claude-share</span>
+        <span class="sep"></span>
+        <span class="room">room <b id="sb-room">—</b></span>
+        <span id="avatars" class="avatars"></span>
+        <span class="top-spacer"></span>
+        <span id="knocks" class="knocks"></span>
+        <span id="host-controls" class="host-controls" hidden>
+          <button id="copy-invite" class="ctrl" type="button" title="Copy invite link"><span class="ico">⧉</span> Invite</button>
+          <button id="pause-btn" class="ctrl" type="button" title="Pause sharing"><span class="ico">⏸</span></button>
+          <button id="end-btn" class="ctrl end" type="button" title="End session"><span class="ico">■</span></button>
+          <span id="end-confirm" class="end-confirm" hidden></span>
+        </span>
       </header>
+
+      <!-- avatar click → role/kick popover (host) or identity card (guest) -->
+      <div id="popover" class="popover" hidden></div>
 
       <div id="dc-banner" class="dc-banner" hidden>
         <span>Disconnected from the room.</span>
@@ -52,60 +63,41 @@
       </div>
 
       <main class="workspace">
-        <div class="left">
-          <div id="stage">
-            <div id="term"></div>
-            <div id="cursors" aria-hidden="true"></div>
-            <div id="paused" class="paused-card" hidden>
-              <div class="paused-inner">
-                <div class="paused-icon">⏸</div>
-                <div>Sharing is paused</div>
-                <small>The host stepped away from the mirror for a moment.</small>
-              </div>
+        <div id="stage">
+          <div id="term"></div>
+          <div id="cursors" aria-hidden="true"></div>
+          <div id="paused" class="paused-card" hidden>
+            <div class="paused-inner">
+              <div class="paused-icon">⏸</div>
+              <div>Sharing is paused</div>
+              <small>The host stepped away from the mirror for a moment.</small>
             </div>
           </div>
-
-          <section id="tray" class="tray">
-            <div class="tray-top">
-              <span id="claude-chip" class="chip claude idle">Claude is idle</span>
-              <button id="new-draft" class="btn tiny ghost" type="button">+ New draft</button>
-            </div>
-            <div id="drafts" class="drafts"></div>
-            <div id="queue" class="queue" hidden></div>
-            <div class="composer-row">
-              <textarea
-                id="composer"
-                class="composer"
-                rows="1"
-                spellcheck="false"
-                autocomplete="off"
-                placeholder="Type to compose — your words appear in the draft above…"
-              ></textarea>
-              <span id="composer-hint" class="composer-hint"></span>
-            </div>
-            <p id="viewer-note" class="viewer-note" hidden>
-              You're a viewer — ask the host for a role to type.
-            </p>
-          </section>
         </div>
 
-        <!-- ── host-only controls ───────────────────────────────────────────── -->
-        <aside id="host-panel" class="host-panel" hidden>
-          <div class="panel-group">
-            <h3 class="panel-title">Knocking</h3>
-            <div id="knocks" class="knocks"></div>
+        <section id="tray" class="tray">
+          <div class="tray-top">
+            <span id="claude-chip" class="chip claude idle">Claude is idle</span>
+            <span id="sb-role" class="my-role"></span>
+            <button id="new-draft" class="ctrl tiny" type="button">+ new draft</button>
           </div>
-          <div class="panel-group">
-            <h3 class="panel-title">In the room</h3>
-            <div id="roster" class="roster"></div>
+          <div id="drafts" class="drafts"></div>
+          <div id="queue" class="queue" hidden></div>
+          <div class="composer-row">
+            <textarea
+              id="composer"
+              class="composer"
+              rows="1"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="Type to compose — your words appear in the draft above…"
+            ></textarea>
+            <span id="composer-hint" class="composer-hint"></span>
           </div>
-          <div class="panel-group panel-actions">
-            <button id="copy-invite" class="btn block primary" type="button">Copy invite link</button>
-            <button id="pause-btn" class="btn block ghost" type="button">Pause sharing</button>
-            <button id="end-btn" class="btn block danger" type="button">End session</button>
-            <div id="end-confirm" class="end-confirm" hidden></div>
-          </div>
-        </aside>
+          <p id="viewer-note" class="viewer-note" hidden>
+            You're a viewer — ask the host for a role to type.
+          </p>
+        </section>
       </main>
     </section>
 
