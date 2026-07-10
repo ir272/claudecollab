@@ -32,6 +32,7 @@ import {
   overlayView,
   roleAction,
   kickAction,
+  inviteLink,
 } from './client.js';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -129,6 +130,16 @@ test('roleAction/kickAction target the participant id, never the claimed name (f
   assert.deepEqual(kickAction('g2'), { t: 'ui', action: { kind: 'kick', id: 'g2' } });
   // The id is used verbatim even when a name has spaces / non-word chars (un-mentionable).
   assert.equal(kickAction('uuid-with-space-name').action.id, 'uuid-with-space-name');
+});
+
+test('inviteLink builds the token-free share link, never the host URL (finding 1)', () => {
+  assert.equal(inviteLink('http://127.0.0.1:8787', 'humble-shark'), 'http://127.0.0.1:8787/humble-shark');
+  // The host tab is at <origin>/<code>?host=<token>; the invite drops the token entirely.
+  const link = inviteLink('https://claudeshare.re', 'brave-otter');
+  assert.equal(link, 'https://claudeshare.re/brave-otter');
+  assert.ok(!link.includes('host='), 'the copied invite never carries the host token');
+  // A trailing slash on the origin does not double up.
+  assert.equal(inviteLink('http://x/', 'c'), 'http://x/c');
 });
 
 test('byId builds an id → participant map', () => {

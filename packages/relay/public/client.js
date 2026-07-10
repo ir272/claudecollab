@@ -140,6 +140,18 @@ export function kickAction(id) {
   return { t: 'ui', action: { kind: 'kick', id } };
 }
 
+/**
+ * The token-free invite link a host copies to share (finding 1). The host tab lives at
+ * `<origin>/<code>?host=<token>`; the invite is the same origin + code with the token
+ * stripped, so a friend who opens it lands on the normal knock flow — never the host
+ * seat. Built from the tab's own location so it works behind any host/port.
+ * @param {string} origin  e.g. window.location.origin
+ * @param {string} code    the room code
+ */
+export function inviteLink(origin, code) {
+  return `${String(origin || '').replace(/\/+$/, '')}/${code}`;
+}
+
 /** Clamp a number into [0,1] (NaN → 0). */
 export function clamp01(v) {
   const n = Number(v);
@@ -384,6 +396,7 @@ function main() {
   const hostPanel = $('#host-panel');
   const knocksBox = $('#knocks');
   const rosterBox = $('#roster');
+  const copyInviteBtn = $('#copy-invite');
   const pauseBtn = $('#pause-btn');
   const endBtn = $('#end-btn');
   const endConfirm = $('#end-confirm');
@@ -655,6 +668,28 @@ function main() {
   });
 
   // ── host controls ────────────────────────────────────────────────────────────
+  // Copy the SAFE, token-free invite link — never this tab's own host URL (finding 1).
+  copyInviteBtn?.addEventListener('click', async () => {
+    const link = inviteLink(window.location.origin, loc.code);
+    const label = copyInviteBtn.textContent;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(link);
+      ok = true;
+    } catch {
+      // Clipboard API unavailable/denied — fall back to a prompt so the host can copy.
+      try {
+        window.prompt('Copy this invite link to share:', link);
+        ok = true;
+      } catch {
+        /* nothing more we can do */
+      }
+    }
+    copyInviteBtn.textContent = ok ? 'Invite copied ✓' : 'Copy failed';
+    setTimeout(() => {
+      copyInviteBtn.textContent = label;
+    }, 1600);
+  });
   pauseBtn.addEventListener('click', () => {
     const v = overlayView(lastState, selfId);
     sendCommand(v.paused ? '/resume' : '/pause');

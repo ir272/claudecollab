@@ -32,6 +32,7 @@ import { paint, ROLE_GLYPH } from '../src/renderer.js';
 import { ScreenSnapshot } from '../src/screen-snapshot.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
 import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js';
+import { hostUrl, inviteUrl, readyToast } from '../src/invite.js';
 import { createPartitioner } from '../src/term-chatter.js';
 import { RoomState, HOST_ID, atLeast } from '../src/brain/state.js';
 import { Queue } from '../src/brain/queue.js';
@@ -605,9 +606,26 @@ async function main() {
   };
 
   const { host: RELAY_HOST } = parseRelayUrl(opts.relayUrl);
-  // The room URL the host opens in a browser tab (and shares with guests). The `host`
-  // token turns this into the host tab; guests visit the same URL without it.
-  const roomUrl = (code) => `http://${RELAY_HOST}:${opts.webPort}/${code}?host=${hostToken}`;
+  // Two URLs, deliberately kept apart (see src/invite.js). The host opens the hostUrl
+  // (carries the token → auto-admit as host); the token-free inviteUrl is the safe link
+  // to hand a friend. The status line shows the hostUrl (the host's own private
+  // terminal); the clipboard + the host tab's "copy invite" button use the inviteUrl.
+  const hostRoomUrl = (code) => hostUrl({ host: RELAY_HOST, port: opts.webPort, code, token: hostToken });
+  const inviteRoomUrl = (code) => inviteUrl({ host: RELAY_HOST, port: opts.webPort, code });
+
+  // Best-effort clipboard copy of the INVITE (never the host URL). Only reports success
+  // once pbcopy has actually exited cleanly — macOS-only, opt-out via the env var, and
+  // failures no longer masquerade as a copy (finding 5).
+  const copyInvite = (text, done) => {
+    if (process.platform !== 'darwin' || process.env.CLAUDE_SHARE_NO_CLIPBOARD) return done(false);
+    try {
+      const pb = execFile('pbcopy', (err) => done(!err));
+      pb.stdin.on('error', () => {}); // a broken pipe surfaces via the exec callback
+      pb.stdin.end(text);
+    } catch {
+      done(false);
+    }
+  };
   // One stateful chatter partitioner per guest (split sequences carry per stream).
   const guestPartitioners = new Map();
   const guestPartitioner = (id) => {
@@ -624,22 +642,14 @@ async function main() {
       reconnectAttempts = 0;
       const reclaimed = state.room === code; // we already held this exact code → reclaim
       state.setRoom(code);
-      currentUrl = roomUrl(code); // pin the URL into the status line
-      if (reclaimed) showToast('reconnected — room reclaimed', 6000);
-      else {
-        // Best-effort clipboard copy (spec: the invite is on the clipboard before
-        // Claude finishes booting) — now the room URL, not the ssh invite. macOS
-        // only for now; guarded by CLAUDE_SHARE_NO_CLIPBOARD; silent on failure.
-        if (process.platform === 'darwin' && !process.env.CLAUDE_SHARE_NO_CLIPBOARD) {
-          try {
-            const pb = execFile('pbcopy');
-            pb.stdin.end(currentUrl);
-          } catch {}
-        }
-        // The URL lives permanently in the status line's URL slot; the toast is just
-        // the transient "copied" confirmation (folded into the same one line).
-        showToast('room ready · link copied to clipboard', 15000);
+      currentUrl = hostRoomUrl(code); // the host's own tab URL lives in the status line
+      if (reclaimed) {
+        showToast('reconnected — room reclaimed', 6000);
+        return;
       }
+      // Copy the SAFE invite (token-free); the host reaches their own tab via the
+      // status-line URL. Claim the copy only if it actually happened (finding 5).
+      copyInvite(inviteRoomUrl(code), (copied) => showToast(readyToast(copied), 15000));
     });
     r.onGone(() => {
       // Reclaim refused: the 10-min TTL lapsed or the room truly ended. Nothing to

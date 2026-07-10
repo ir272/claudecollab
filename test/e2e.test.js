@@ -271,9 +271,12 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   // ── the room URL (printed in the status line once connected) ────────────────
   // Cold start is the slow step (spawn node, load node-pty, ssh to the relay, get a
   // room), so give this one wait ample headroom; every later step is sub-second.
-  await host.waitFor('link copied', 60000);
+  await host.waitFor('room ready', 60000);
+  // This CLI runs with CLAUDE_SHARE_NO_CLIPBOARD=1, so nothing was copied — the toast
+  // must NOT claim it was (finding 5: only claim the copy when it happened).
+  assert.ok(!host.get().includes('copied to clipboard'), 'no false clipboard claim when copy is disabled');
   const m = host.get().match(/http:\/\/127\.0\.0\.1:(\d+)\/([a-z]+-[a-z]+)\?host=([0-9a-f]+)/);
-  assert.ok(m, 'the status line carries a room URL with a host token');
+  assert.ok(m, 'the status line carries the host-tab URL with a host token');
   assert.equal(Number(m[1]), webPort, 'the URL points at the web door port');
   const code = m[2];
   const token = m[3];
