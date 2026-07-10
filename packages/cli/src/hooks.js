@@ -27,9 +27,9 @@ import process from 'node:process';
 /** The Claude Code hooks we inject, in the order they appear in the settings file. */
 export const HOOK_EVENTS = Object.freeze(['UserPromptSubmit', 'Stop', 'Notification', 'PostToolUse']);
 
-// Hooks with a one-to-one internal event. Notification is special-cased below.
+// Hooks with a one-to-one internal event. Notification and UserPromptSubmit are
+// special-cased below.
 const SIMPLE = Object.freeze({
-  UserPromptSubmit: 'busy',
   Stop: 'idle',
   PostToolUse: 'tool',
 });
@@ -44,6 +44,16 @@ const SIMPLE = Object.freeze({
 export function mapHookEvent(hook, payload) {
   if (hook === 'Notification') {
     return payload && payload.notification_type === 'permission_prompt' ? 'ask' : null;
+  }
+  // A slash command (/model) or ! bash line fires UserPromptSubmit on submission
+  // but resolves client-side: no turn runs, so no Stop hook ever follows. Flipping
+  // busy on that edge wedges the room "brewing" forever (dogfood: /model from a
+  // draft froze the queue). Drop the busy edge for those — a slash command that
+  // DOES run a real turn (a skill) still flips busy at its first PostToolUse.
+  // No prompt text in the payload → fail toward busy (a real turn may be starting).
+  if (hook === 'UserPromptSubmit') {
+    const p = payload && typeof payload.prompt === 'string' ? payload.prompt.trimStart() : '';
+    return p.startsWith('/') || p.startsWith('!') ? null : 'busy';
   }
   return SIMPLE[hook] ?? null;
 }

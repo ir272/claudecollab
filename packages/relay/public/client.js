@@ -678,6 +678,25 @@ function main() {
     // for the whole drag. Pointermove keeps flowing regardless.
     stage.addEventListener('pointermove', onStageMove);
     stage.addEventListener('pointerleave', () => sendPointer(-1, -1)); // park off-canvas
+    // Wheel = Claude's own transcript scroll. Claude enables mouse tracking and
+    // scrolls internally on wheel reports — the terminal never receives scrollback
+    // lines, so xterm's viewport has nothing to scroll and would swallow the wheel
+    // as a dead mouse report (stdin is disabled). Capture it before xterm and mail
+    // it to the brain, which types the real report into the pty.
+    stage.addEventListener('wheel', onStageWheel, { passive: false, capture: true });
+  }
+
+  let wheelAcc = 0;
+  function onStageWheel(e) {
+    if (phase !== 'live') return;
+    if (e.target.closest?.('.fdraft, .popover')) return; // drafts/popovers scroll themselves
+    e.preventDefault();
+    e.stopPropagation();
+    wheelAcc += e.deltaY;
+    const lines = Math.trunc(wheelAcc / 40); // ~one report per wheel notch
+    if (!lines) return;
+    wheelAcc -= lines * 40;
+    sendMsg({ t: 'ui', action: { kind: 'scroll', lines: Math.max(-8, Math.min(8, lines)) } });
   }
 
   // The tab's cell size, from the renderer's own measurement (what addon-fit reads),

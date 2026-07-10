@@ -403,12 +403,82 @@ async function main() {
   const recomputeClamp = () => repaintBand();
 
   // ── queue drain (fail closed, one per idle) ─────────────────────────────────
+  // A split write (text, then \r 120ms later) briefly owns the pty; pumping a
+  // prompt into that gap would interleave bytes into the half-typed line. The
+  // lock defers the pump past the gap and retries.
+  let ptyLockUntil = 0;
+
+  // pump()'s busy is OPTIMISTIC — only real once the UserPromptSubmit hook
+  // confirms the prompt actually submitted. Claude's paste heuristic sometimes
+  // swallows a trailing Enter (timing-dependent), leaving the text unsent in the
+  // input while the room shows "brewing" forever. Watchdog: re-press Enter once
+  // at 2s; if still unconfirmed at 8s, fall back to idle so the room can't wedge.
+  let submitTimers = [];
+  const clearSubmitWatch = () => {
+    for (const t of submitTimers) clearTimeout(t);
+    submitTimers = [];
+  };
+  const armSubmitWatch = () => {
+    clearSubmitWatch();
+    const retry = setTimeout(() => {
+      try {
+        pty.write('\r');
+      } catch {}
+    }, 2000);
+    const bail = setTimeout(() => {
+      if (claude.state === 'busy') {
+        claude.state = 'idle';
+        showToast('a prompt may not have submitted — check the input line', 8000);
+        repaintBand();
+      }
+    }, 8000);
+    retry.unref?.();
+    bail.unref?.();
+    submitTimers = [retry, bail];
+  };
+
+  // An interrupt — a lone Esc reaching the pty while a turn runs — aborts the
+  // turn, but Claude fires NO Stop hook for it (verified live), so the room would
+  // stick "brewing" until a manual resync. If no hook of any kind lands shortly
+  // after the Esc, trust the interrupt and return to idle. Esc during an 'ask'
+  // dismisses the ask the same hookless way, so any non-idle state qualifies.
+  let lastHookAt = 0;
+  const sniffInterrupt = (bytes) => {
+    if (bytes !== '\x1b' || !hooks || claude.state === 'idle') return;
+    const sentAt = Date.now();
+    const t = setTimeout(() => {
+      if (claude.state !== 'idle' && lastHookAt < sentAt) {
+        claude.state = 'idle';
+        armed = false;
+        pump();
+        repaintBand();
+      }
+    }, 1500);
+    t.unref?.();
+  };
+
   const pump = () => {
+    if (Date.now() < ptyLockUntil) {
+      const retry = setTimeout(pump, 160);
+      retry.unref?.();
+      return;
+    }
     if (!hooks || claude.state !== 'idle') return; // no drain unless known-idle
     const item = queue.drain('idle');
     if (!item) return;
-    pty.write(item.text + '\r');
+    // Split write, same as slash sends: written as one atomic chunk, Claude's
+    // paste heuristic can treat the trailing \r as a pasted newline and the
+    // prompt sits unsent (dogfood: intermittent stuck-in-queue wedge).
+    ptyLockUntil = Date.now() + 150;
+    pty.write(item.text);
+    const enter = setTimeout(() => {
+      try {
+        pty.write('\r');
+      } catch {}
+    }, 120);
+    enter.unref?.();
     claude.state = 'busy'; // optimistic; the UserPromptSubmit hook confirms
+    armSubmitWatch();
     repaintBand();
   };
 
@@ -445,6 +515,7 @@ async function main() {
       // Written as one atomic chunk, Claude's paste heuristic can treat the trailing
       // \r as a pasted newline and the command submits as a plain chat message.
       // ponytail: two slash sends inside the gap could interleave; humans don't.
+      ptyLockUntil = Date.now() + 150; // keep pump() out of the split-write gap
       pty.write(text);
       const enter = setTimeout(() => {
         try {
@@ -628,6 +699,7 @@ async function main() {
   const applyInput = (userId, eff) => {
     switch (eff.kind) {
       case 'pty':
+        sniffInterrupt(eff.data);
         pty.write(eff.data);
         break;
       case 'draft': {
@@ -796,6 +868,19 @@ async function main() {
       if (drafts.deleteBox(action.id)) repaintBand();
       return;
     }
+    // Wheel over the mirror. Claude owns transcript scrolling — it enables mouse
+    // tracking and scrolls internally on wheel reports; the terminal never receives
+    // scrollback lines (verified: history stays 0 even solo). So the browser wheel
+    // becomes Claude's own scroll, typed into the pty and shared like any input.
+    if (action.kind === 'scroll') {
+      if (!atLeast(role, 'prompter')) return;
+      const n = Math.min(8, Math.abs(action.lines | 0));
+      if (!n) return;
+      const btn = action.lines < 0 ? 64 : 65; // SGR wheel up / down
+      const { cols, rows } = viewSize();
+      pty.write(`\x1b[<${btn};${Math.max(1, cols >> 1)};${Math.max(1, rows >> 1)}M`.repeat(n));
+      return;
+    }
     // The host's escape hatch for a wedged state machine: if a hook was missed
     // (observed once after declining a permission ask), the room sticks 'busy' and
     // the queue holds forever. Clicking the state chip forces idle and drains.
@@ -911,6 +996,7 @@ async function main() {
       // host are the two typing roles now). Two keys stay ours even then: Ctrl+C
       // (an ssh guest's "leave the room") and Ctrl+N (the + draft chip).
       if (!composing && atLeast(role, 'prompter') && human !== '\x03' && human !== '\x0e') {
+        sniffInterrupt(human);
         return pty.write(human);
       }
       applyInput(actor, dispatch(actor, role, Buffer.from(human, 'binary'), { armed, toasted, composing }));
@@ -997,22 +1083,34 @@ async function main() {
   // ── hook events → brain ───────────────────────────────────────────────────────
   if (hooks) {
     hooks.on('busy', () => {
+      lastHookAt = Date.now();
+      clearSubmitWatch(); // the submission is confirmed — the optimistic busy is real
       claude.state = 'busy';
       armed = false;
       repaintBand();
     });
     hooks.on('idle', () => {
+      lastHookAt = Date.now();
+      clearSubmitWatch();
       claude.state = 'idle';
       armed = false;
       pump();
       repaintBand();
     });
     hooks.on('ask', () => {
+      lastHookAt = Date.now();
+      clearSubmitWatch();
       claude.state = 'ask';
       armed = true; // the ONLY thing that arms a composing-side y/n → Claude (spec: gate on events)
       repaintBand();
     });
     hooks.on('tool', (p) => {
+      lastHookAt = Date.now();
+      clearSubmitWatch(); // any hook activity proves Claude took the prompt
+      // Tool activity proves a turn is running. A slash command's UserPromptSubmit
+      // is dropped (it may never Stop — see mapHookEvent), so a slash that DOES run
+      // a real turn flips busy here instead; its Stop still returns to idle.
+      if (claude.state === 'idle') claude.state = 'busy';
       const name = p?.tool_name ?? 'tool';
       const files = [];
       const inp = p?.tool_input ?? {};
@@ -1106,7 +1204,10 @@ async function main() {
   stdin.on('data', (d) => {
     const { chatter, human } = partitionHostInput(d);
     if (chatter) pty.write(Buffer.from(chatter, 'binary'));
-    if (human) pty.write(Buffer.from(human, 'binary'));
+    if (human) {
+      sniffInterrupt(human); // the host's own Esc interrupt is hookless too
+      pty.write(Buffer.from(human, 'binary'));
+    }
   });
 
   process.on('SIGWINCH', () => {

@@ -66,6 +66,20 @@ test('mapHookEvent maps the four Claude hooks to internal events', () => {
   assert.equal(mapHookEvent('PostToolUse', {}), 'tool');
 });
 
+test('a slash or bash submission never flips busy (no Stop will ever clear it)', () => {
+  // /model & friends resolve client-side: UserPromptSubmit fires but no turn runs,
+  // so mapping them to busy wedges the room "brewing" forever (dogfood).
+  assert.equal(mapHookEvent('UserPromptSubmit', { prompt: '/model' }), null);
+  assert.equal(mapHookEvent('UserPromptSubmit', { prompt: '  /clear' }), null);
+  assert.equal(mapHookEvent('UserPromptSubmit', { prompt: '!ls -la' }), null);
+  // A real prompt still flips busy; missing/odd prompt text fails toward busy
+  // (a real turn may be starting — fail closed keeps the queue honest).
+  assert.equal(mapHookEvent('UserPromptSubmit', { prompt: 'fix the bug in /src' }), 'busy');
+  assert.equal(mapHookEvent('UserPromptSubmit', { prompt: '' }), 'busy');
+  assert.equal(mapHookEvent('UserPromptSubmit', { prompt: 42 }), 'busy');
+  assert.equal(mapHookEvent('UserPromptSubmit', null), 'busy');
+});
+
 test('Notification maps to "ask" ONLY for notification_type permission_prompt', () => {
   assert.equal(mapHookEvent('Notification', { notification_type: 'permission_prompt' }), 'ask');
   // Any other notification is not a permission ask — must NOT arm the gate.

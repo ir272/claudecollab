@@ -142,6 +142,9 @@ test('validate accepts well-formed messages', () => {
     // roster actions target a participant id (not a @-mention) so duplicate names can't mis-target
     { t: 'ui', id: 'host', action: { kind: 'role', id: 'g2', role: 'prompter' } },
     { t: 'ui', id: 'host', action: { kind: 'kick', id: 'g2' } },
+    // wheel over the mirror → Claude's transcript scroll (negative = up)
+    { t: 'ui', id: 'g1', action: { kind: 'scroll', lines: -3 } },
+    { t: 'ui', action: { kind: 'scroll', lines: 8 } },
   ];
   for (const m of good) assert.equal(validate(m), true, JSON.stringify(m));
 });
@@ -190,6 +193,8 @@ test('validate rejects malformed messages', () => {
     { t: 'ui', action: { kind: 'kick', id: 7 } }, // target id must be a string
     { t: 'ui', action: { kind: 'role', id: 'g2' } }, // role is missing
     { t: 'ui', action: { kind: 'role', role: 'prompter' } }, // target id is missing
+    { t: 'ui', action: { kind: 'scroll' } }, // scroll needs a line count
+    { t: 'ui', action: { kind: 'scroll', lines: 'up' } }, // lines must be a number
     { t: 'ui', action: { kind: 'role', id: 'g2', role: 7 } }, // role must be a string
   ];
   for (const m of bad) assert.equal(validate(m), false, JSON.stringify(m));

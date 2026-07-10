@@ -23,6 +23,14 @@ const CLEAR_RE = /\x1b\[2J|\x1b\[3J|\x1bc|\x1b\[\?1049h/g;
 // frame boundary when we can, so a joiner's replay never starts mid-repaint.
 const SU_END = '\x1b[?2026l';
 
+// Cursor visibility (DECTCEM) is a STICKY mode set once on a state change, not
+// re-asserted per frame — so the establishing ?25h often lives in a frame the
+// clear-reset or cap-trim has already dropped, and a joiner replaying the window
+// resolves to cursor-hidden while everyone who watched live shows it. We track the
+// effective state across ALL pushed bytes and re-assert it at the end of get().
+const CURSOR_SHOW = '\x1b[?25h';
+const CURSOR_HIDE = '\x1b[?25l';
+
 // A COMPLETE escape sequence: CSI (ESC [ … final), OSC (ESC ] … BEL/ST), or a
 // 2-byte ESC form (ESC 7 / ESC 8). Used to find spans so a cut never lands in the
 // middle of one, and to decide whether a trailing ESC… is finished (finding 2).
@@ -60,6 +68,7 @@ function dropTrailingPartial(s) {
 export class ScreenSnapshot {
   #buf = '';
   #cap;
+  #cursorShown = true; // terminals start with a visible cursor
 
   /** @param {{cap?:number}} [opts] max bytes retained (default 256 KiB) */
   constructor({ cap = 1 << 18 } = {}) {
@@ -69,7 +78,15 @@ export class ScreenSnapshot {
   /** Absorb one chunk of child output (a frame or partial frame). */
   push(chunk) {
     if (!chunk) return;
+    const prevLen = this.#buf.length;
     this.#buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+
+    // Track effective cursor visibility over the appended bytes. Scan a window
+    // reaching a few bytes back so a sequence split across chunks still counts.
+    const win = this.#buf.slice(Math.max(0, prevLen - 8));
+    const show = win.lastIndexOf(CURSOR_SHOW);
+    const hide = win.lastIndexOf(CURSOR_HIDE);
+    if (show !== -1 || hide !== -1) this.#cursorShown = show > hide;
 
     // Drop everything before the last full-screen clear / alt-screen enter: the
     // screen was wiped there, so nothing prior is visible any more. The cut lands ON
@@ -107,7 +124,12 @@ export class ScreenSnapshot {
 
   /** The bytes to replay so an attacher sees the current screen (may be ''). */
   get() {
-    return dropTrailingPartial(this.#buf);
+    const out = dropTrailingPartial(this.#buf);
+    if (!out) return out;
+    // Re-assert the effective cursor visibility: the sticky ?25h/?25l that set it
+    // may have been trimmed out of the window above (a joiner during a busy spell
+    // otherwise lands cursor-hidden while the host's terminal shows it).
+    return out + (this.#cursorShown ? CURSOR_SHOW : CURSOR_HIDE);
   }
 
   /** Bytes currently retained. */
