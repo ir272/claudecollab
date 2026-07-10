@@ -133,6 +133,26 @@ function placeholderLine(state = {}, width = 80) {
   return color(DIM, plain, width);
 }
 
+/**
+ * The band height for a given amount of content, computed each repaint so the band
+ * grows/shrinks with what it must show (status + draft boxes + queue + knocks) and
+ * NEVER bleeds past the screen (spec §renderer; dogfood finding: 2 draft boxes drew
+ * past the bottom edge). The band reserves at least `min` rows and may grow up to a
+ * third of the screen — but always leaves Claude at least one row. Overflow beyond
+ * this height is collapsed into a "+N more" line by paint(), never painted off-screen.
+ *
+ * @param {number} contentCount  desired band rows (status line + dynamic lines)
+ * @param {number} rows          the (clamped, shared) terminal rows
+ * @param {{min?:number}} [opts] minimum reserved rows (defaults to 6)
+ * @returns {number} rows to reserve for the band, in [1, min(cap, rows-1)]
+ */
+export function bandHeight(contentCount, rows, { min = 6 } = {}) {
+  const r = Math.max(1, Math.floor(rows) || 1);
+  const cap = Math.min(Math.max(min, Math.floor(r / 3)), Math.max(1, r - 1));
+  const desired = Math.max(Math.floor(contentCount) || 0, min);
+  return Math.max(1, Math.min(desired, cap));
+}
+
 // Pad a plain string to a visible width (truncating first if it's too wide).
 function padTo(str, width) {
   const t = truncateToWidth(str, width);
@@ -229,22 +249,39 @@ export function knockLine(knock, { cols = 80 } = {}) {
 
 /**
  * Build exactly `bandRows` content strings (top = status line, then the dynamic
- * region, then blanks). Each is already width-clamped to `cols`. When the caller
- * supplies `state.lines` (composed draft boxes / queue / prompts), those fill the
- * dynamic region; otherwise a dim placeholder does.
+ * region). Each is already width-clamped to `cols`. When the caller supplies
+ * `state.lines` (composed draft boxes / queue / prompts), those fill the dynamic
+ * region; otherwise a dim placeholder does.
+ *
+ * If the composed content is TALLER than `bandRows`, the overflow is collapsed into
+ * a trailing "+N more" line so the band can never paint past its reserved rows —
+ * the caller sizes `bandRows` from content via bandHeight(), so this only clips the
+ * true excess (spec §renderer; dogfood finding: content must not bleed off-screen).
  */
 function bandLines(state, cols, bandRows) {
-  const lines = [statusLine(state, cols)];
+  const status = statusLine(state, cols);
   const dynamic = Array.isArray(state.lines) ? state.lines : null;
-  for (let i = 1; i < bandRows; i++) {
-    if (dynamic) {
-      const l = dynamic[i - 1];
-      lines.push(l != null ? truncateToWidth(String(l), cols) : '');
-    } else {
-      lines.push(i === 1 ? placeholderLine(state, cols) : '');
-    }
+
+  // Legacy placeholder region (no composed lines): status, a dim placeholder, blanks.
+  if (!dynamic) {
+    const lines = [status];
+    for (let i = 1; i < bandRows; i++) lines.push(i === 1 ? placeholderLine(state, cols) : '');
+    return lines;
   }
-  return lines;
+
+  // Composed content = status + the caller's dynamic lines. Fit it into the reserved
+  // rows: pad with blanks when it fits, or keep what fits and replace the last row
+  // with a "+N more" marker so nothing is painted past the band's last row.
+  const content = [status, ...dynamic.map((l) => (l != null ? truncateToWidth(String(l), cols) : ''))];
+  if (content.length > bandRows) {
+    if (bandRows <= 1) return content.slice(0, bandRows);
+    const keep = bandRows - 1;
+    const head = content.slice(0, keep);
+    head.push(truncateToWidth(`+${content.length - keep} more`, cols));
+    return head;
+  }
+  while (content.length < bandRows) content.push('');
+  return content;
 }
 
 /**

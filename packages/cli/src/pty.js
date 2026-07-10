@@ -151,6 +151,16 @@ export async function startPty({
       const r = (newRows ?? process.stdout.rows ?? realRows) - bandRows;
       term.resize(Math.max(1, c), Math.max(1, r));
     },
+    /**
+     * Resize the child PTY to an EXACT size (cols × childRows), no band arithmetic.
+     * The band's height is dynamic (it grows/shrinks with content), so the caller
+     * computes Claude's region directly — rows minus the current band height — and
+     * sets it here (dogfood finding: the child must shrink/grow so the band never
+     * overlaps Claude's output). Undefined dimensions keep the current one.
+     */
+    resizeChild(newCols, childRows) {
+      term.resize(Math.max(1, newCols ?? term.cols), Math.max(1, childRows ?? term.rows));
+    },
     /** Kill the child. */
     kill(signal) {
       term.kill(signal);

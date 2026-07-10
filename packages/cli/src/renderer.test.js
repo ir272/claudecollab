@@ -9,6 +9,7 @@ import {
   draftBox,
   queueBlock,
   knockLine,
+  bandHeight,
 } from './renderer.js';
 
 // ── ANSI vocabulary the band uses (must match renderer.js) ────────────────────
@@ -319,4 +320,68 @@ test('paint truncates composed lines to the terminal width', () => {
   const inner = out.replace(/^\x1b7/, '').replace(/\x1b8$/, '');
   const content = inner.split(/\x1b\[\d+;1H\x1b\[2K/).slice(1);
   for (const line of content) assert.ok(stringWidth(line) <= 12, `width ${stringWidth(line)} > 12`);
+});
+
+// ── bandHeight (dogfood finding 2: content-driven, capped, never overflows) ───────
+
+test('bandHeight grows with content up to a third-of-screen cap', () => {
+  // rows=30, min=6 → cap = max(6, floor(30/3)=10) = 10
+  assert.equal(bandHeight(2, 30, { min: 6 }), 6, 'small content clamps up to the min floor');
+  assert.equal(bandHeight(8, 30, { min: 6 }), 8, 'grows to fit the content');
+  assert.equal(bandHeight(20, 30, { min: 6 }), 10, 'never grows past the cap');
+});
+
+test('bandHeight caps at a third of the screen and always leaves Claude a row', () => {
+  for (const rows of [24, 30, 40, 50]) {
+    const h = bandHeight(1000, rows, { min: 6 });
+    assert.ok(h <= Math.max(6, Math.floor(rows / 3)), `rows=${rows}: within the cap`);
+    assert.ok(h <= rows - 1, `rows=${rows}: leaves Claude at least one row`);
+    assert.ok(h >= 1, `rows=${rows}: at least one band row`);
+  }
+});
+
+test('bandHeight honors a min floor above a third of a small screen', () => {
+  // rows=24, min=8 → cap = max(8, floor(24/3)=8) = 8
+  assert.equal(bandHeight(3, 24, { min: 8 }), 8);
+});
+
+// ── paint: overflow collapses to "+N more", never past the last row (finding 2) ──
+
+test('paint clips overflowing content to a "+N more" tail within the band', () => {
+  // status + 8 dynamic lines = 9 content rows, but the band reserves only 6.
+  const lines = ['box1a', 'box1b', 'box1c', 'box2a', 'box2b', 'box2c', 'q1', 'q2'];
+  const rows = 24;
+  const bandRows = 6;
+  const out = paint({ cols: 80, rows, bandRows, room: 'r', participants: [], mode: 'default', lines });
+  const content = bandContentLines(out);
+  assert.equal(content.length, bandRows, 'paints exactly bandRows content lines');
+  assert.match(content[content.length - 1], /\+\d+ more/, 'last row is the overflow marker');
+  // 9 content rows into 6: keep 5, mark "+4 more".
+  assert.match(content[content.length - 1], /\+4 more/);
+  const rowsRef = bandRowsReferenced(out);
+  assert.equal(rowsRef.length, bandRows, 'exactly bandRows rows positioned');
+  assert.equal(Math.max(...rowsRef), rows, 'bottom band row is the terminal last row');
+  assert.equal(Math.min(...rowsRef), rows - bandRows + 1, 'top band row leaves Claude the rest');
+});
+
+test('paint never positions a band row past the terminal, even with huge content', () => {
+  for (const [rows, bandRows] of [[24, 6], [30, 8], [40, 10]]) {
+    const lines = Array.from({ length: 50 }, (_, i) => `line ${i}`);
+    const out = paint({ cols: 80, rows, bandRows, lines });
+    const rowsRef = bandRowsReferenced(out);
+    assert.equal(rowsRef.length, bandRows, `rows=${rows}: exactly bandRows rows`);
+    assert.equal(Math.max(...rowsRef), rows, `rows=${rows}: never past the last row`);
+    assert.ok(rowsRef.every((r) => r >= 1 && r <= rows), `rows=${rows}: all rows on-screen`);
+    for (const line of bandContentLines(out)) assert.ok(stringWidth(line) <= 80);
+  }
+});
+
+test('paint anchors the band bottom to the terminal rows for any height (clamped anchoring)', () => {
+  // Finding 3: painted at the shared/clamped size, the band's last row is always the
+  // terminal's last row — identical anchoring for every participant.
+  for (const rows of [24, 30, 40]) {
+    const out = paint({ cols: 100, rows, bandRows: 6, lines: ['a', 'b'] });
+    const rowsRef = bandRowsReferenced(out);
+    assert.equal(Math.max(...rowsRef), rows, `rows=${rows}: band bottom == last row`);
+  }
 });
