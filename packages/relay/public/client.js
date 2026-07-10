@@ -446,7 +446,6 @@ function main() {
   const sbRoom = $('#sb-room');
   const sbRole = $('#sb-role');
   const toastEl = $('#toast');
-  const directBtn = $('#direct-btn');
   toastEl.addEventListener('click', () => {
     toastEl.hidden = true;
   });
@@ -621,8 +620,12 @@ function main() {
     }
     term = new Term({
       convertEol: false,
-      cursorBlink: false,
-      disableStdin: true, // the draft tray owns input; the mirror is read-only
+      // Claude's real cursor IS the "you type here" indicator — the mirror never
+      // holds browser focus, so render the inactive cursor as a full block (CSS
+      // adds the blink).
+      cursorBlink: true,
+      cursorInactiveStyle: 'block',
+      disableStdin: true, // the drafts own composed input; the mirror is read-only
       fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
       fontSize: 13,
       lineHeight: 1.1,
@@ -644,9 +647,14 @@ function main() {
     // click and its keydown handler swallows every key it gets — which silently ate
     // all direct-mode input. Make the helper unfocusable: keys then land on the
     // composer/document, where OUR handlers route them (drafts or direct-to-Claude).
+    // One wrinkle: xterm draws NO cursor until it has been focused once, and Claude's
+    // cursor is our "you type here" indicator — prime it with a silent focus/blur
+    // cycle BEFORE locking the helper.
     if (term.textarea) {
-      term.textarea.disabled = true;
       term.textarea.tabIndex = -1;
+      term.textarea.focus();
+      term.textarea.blur();
+      term.textarea.disabled = true;
     }
     const ro = new ResizeObserver(() => fit());
     ro.observe(stage);
@@ -729,16 +737,36 @@ function main() {
     const h = inner.offsetHeight;
     if (w < 2 || h < 2) return;
     const rect = stage.getBoundingClientRect();
-    const fit = Math.min((rect.width - 24) / w, (rect.height - 20) / h);
-    // Retarget the font while the ideal size is meaningfully away from current.
-    // xterm re-measures ASYNCHRONOUSLY after a font change — a rAF often reads the
-    // stale size (the "doesn't span until the first message" bug), so retry on a
-    // timer until the measurement settles, bounded so it can never loop.
+    const availW = rect.width - 24;
+    const availH = rect.height - 20;
+    const fit = Math.min(availW / w, availH / h);
+    if (!Number.isFinite(fit) || fit <= 0) return;
+    // Pass 1: font size by the BINDING axis (crisp text beats transform-zoom).
+    // xterm re-measures ASYNCHRONOUSLY after an option change — a rAF often reads
+    // the stale size (the "doesn't span until the first message" bug), so retry on
+    // a timer until the measurement settles, bounded so it can never loop.
     const cur = term.options.fontSize || 13;
     const ideal = Math.max(9, Math.min(28, Math.floor(cur * fit)));
-    if (ideal !== cur && retuneTries < 6 && Number.isFinite(fit) && fit > 0) {
+    if (ideal !== cur && retuneTries < 8) {
       retuneTries += 1;
       term.options.fontSize = ideal;
+      setTimeout(scaleTerm, 90);
+      return;
+    }
+    // Pass 2: the shared size carries someone ELSE's aspect ratio (solo it is the
+    // host TERMINAL's shape, not this browser's) — a uniform scale then letterboxes
+    // one axis. Pad the slack axis instead: letter-spacing stretches the columns,
+    // line-height the rows. Crisp, undistorted, and the CLI fills BOTH axes.
+    const cellW = w / term.cols;
+    const cellH = h / term.rows;
+    const curLs = term.options.letterSpacing || 0;
+    const curLh = term.options.lineHeight || 1.1;
+    const wantLs = Math.max(0, Math.min(5, curLs + (availW / term.cols - cellW)));
+    const wantLh = Math.max(1, Math.min(1.4, (curLh * availH) / term.rows / cellH));
+    if ((Math.abs(wantLs - curLs) > 0.4 || Math.abs(wantLh - curLh) > 0.02) && retuneTries < 8) {
+      retuneTries += 1;
+      if (Math.abs(wantLs - curLs) > 0.4) term.options.letterSpacing = Math.round(wantLs * 2) / 2;
+      if (Math.abs(wantLh - curLh) > 0.02) term.options.lineHeight = Math.round(wantLh * 100) / 100;
       setTimeout(scaleTerm, 90);
       return;
     }
@@ -951,7 +979,9 @@ function main() {
     // straight into Claude.
     const selfComposing = v.drafts.some((d) => d.focusedBySelf);
     directOn = v.canCompose && !selfComposing;
-    directBtn.hidden = !directOn; // a passive "keys go into Claude" indicator
+    // The "keys go into Claude" indicator is Claude's own blinking cursor in the
+    // mirror (forced filled+blinking via CSS) — no chip needed.
+    stage.classList.toggle('direct', directOn);
     // Composing → the key catcher must hold focus, so typing lands in the draft
     // without a manual click (unless a drag-selection is standing).
     if (selfComposing && !composer.disabled && document.activeElement !== composer) {
