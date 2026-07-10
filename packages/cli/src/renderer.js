@@ -106,6 +106,19 @@ export function truncateToWidth(str, max) {
   return out;
 }
 
+/**
+ * Truncate to `max` cells like {@link truncateToWidth}, but when the text actually
+ * doesn't fit, end it in a single-cell ellipsis so a trimmed toast reads as clipped
+ * prose ("copy the invite…") instead of a raw mid-word cut (finding 5).
+ */
+export function ellipsize(str, max) {
+  if (max <= 0) return '';
+  const s = String(str);
+  if (stringWidth(s) <= max) return s; // fits whole — no ellipsis
+  if (max === 1) return '…';
+  return truncateToWidth(s, max - 1) + '…';
+}
+
 // ── the status line ─────────────────────────────────────────────────────────────
 
 const color = (sgr, plain, width) => (width <= 0 ? '' : sgr + truncateToWidth(plain, width) + RESET);
@@ -173,10 +186,13 @@ export function statusLine(state = {}, width = 80) {
     // Doesn't fit whole. The URL is kept even here (truncated only if it can't fit
     // alone); every other slot is trimmed into what's left, then packing stops.
     if (key === 'url') {
+      // A URL trimmed with an ellipsis reads as a broken link, so hard-cut it (this
+      // only happens far below the 80-col floor; see the doc comment above).
       chosen.set(key, truncateToWidth(slot.text, inner - used - sep));
     } else {
       const budget = inner - used - sep;
-      if (budget >= 1) chosen.set(key, truncateToWidth(slot.text, budget));
+      // room/people/claude (toasts land here) ellipsize so a trim never cuts mid-word.
+      if (budget >= 1) chosen.set(key, ellipsize(slot.text, budget));
     }
     break;
   }

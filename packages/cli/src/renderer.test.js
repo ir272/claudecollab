@@ -141,6 +141,19 @@ test('statusLine only trims the URL itself on an absurdly narrow terminal', () =
   assert.ok(stringWidth(line) <= 20, 'the band still never exceeds the width');
 });
 
+test('statusLine ellipsizes a trimmed slot cleanly rather than cutting mid-word (finding 5)', () => {
+  // The claude-state slot holds toasts; when it must be trimmed it should end in an
+  // ellipsis, not a raw mid-word cut ("copy the invite fr ·" in the live bug).
+  const line = statusLine(
+    { room: 'humble-shark', people: 3, claudeState: 'room ready · copy the invite from your host tab' },
+    56,
+  );
+  const plain = stripAnsi(line);
+  assert.ok(plain.includes('…'), `the trimmed toast ends in an ellipsis, got ${JSON.stringify(plain)}`);
+  assert.doesNotMatch(plain, /\bfr ─$/, 'never a raw mid-word cut');
+  assert.ok(stringWidth(line) <= 56, 'still never wraps into Claude');
+});
+
 test('statusLine is colored orange and reset', () => {
   const line = statusLine({ room: 'r', people: 1, claudeState: 'live' }, 80);
   assert.ok(line.startsWith(ORANGE), 'opens with the orange SGR');
