@@ -34,7 +34,6 @@ const COPY = {
   connecting: (host, code) => `connecting to ${host}'s room ${code}…\r\n`,
   namePrompt: 'pick a name: ',
   knocking: '\u{1F6AA} knocking…\r\n',
-  live: '\r\n── you\'re live ──\r\n',
   denied: "\r\nthe host didn't let you in this time. no hard feelings \u{1F44B}\r\n",
   timeout: "\r\nno answer — the host isn't available right now. try again later \u{1F44B}\r\n",
   banned: '\r\nyou\'ve been removed from this room.\r\n',
@@ -236,7 +235,9 @@ export function startRelay(opts = {}) {
           room.pending.delete(rec.id);
           room.guests.set(rec.id, rec);
           rec.phase = 'live';
-          safeWrite(rec.stream, COPY.live);
+          // No "you're live" seam here: the host's join context card (sent next, via
+          // TO) already ends with one. Writing it here too printed the separator
+          // twice around the card (finding 4) — the card owns the single seam now.
           safeWrite(stream, encode({ t: TYPES.JOINED, id: rec.id }));
           // Hand the host the guest's terminal size so it can clamp the shared view.
           safeWrite(stream, encode({ t: TYPES.RESIZE, id: rec.id, cols: rec.cols, rows: rec.rows }));
