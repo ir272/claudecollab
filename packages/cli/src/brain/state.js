@@ -33,6 +33,21 @@ export function atLeast(role, min) {
 export const FLOOR_COLS = 80;
 export const FLOOR_ROWS = 24;
 
+// Stable participant colors for the browser overlay (spec §roles: "color is a
+// bonus — colorblind-safe by not being load-bearing"; name tags carry identity).
+// Eight distinct hues, assigned by the brain per fingerprint so a returning key
+// keeps its color on reconnect. Kept accessible/distinct; never load-bearing.
+export const PALETTE = Object.freeze([
+  '#e5484d', // red
+  '#f76b15', // orange
+  '#ffb224', // amber
+  '#30a46c', // green
+  '#0091ff', // blue
+  '#8e4ec6', // purple
+  '#e93d82', // pink
+  '#12a594', // teal
+]);
+
 /** The host's own participant id (the host is not a relay guest). */
 export const HOST_ID = 'host';
 
@@ -50,6 +65,10 @@ export class RoomState {
   // its seat's role on reconnect (spec §identity: name, color, role restored on
   // reconnect); keyless guests (no fp) are never recorded and rejoin as new.
   #seatRoles = new Map();
+  // colorKey -> palette color. The key is a fingerprint (so a returning key keeps its
+  // color) or, for the host and keyless guests, the participant id. Assigned in first-
+  // seen order and wrapped modulo the palette so it never runs out.
+  #colorByKey = new Map();
 
   /**
    * @param {object} [opts]
@@ -67,9 +86,25 @@ export class RoomState {
       name: hostName,
       fp: null,
       role: 'host',
+      color: this.#assignColor(HOST_ID),
       cols: hostSize?.cols,
       rows: hostSize?.rows,
     });
+  }
+
+  // Return the stable color for a color key, assigning the next palette slot on
+  // first sight. Reused for a returning fingerprint (same key ⇒ same color).
+  #assignColor(key) {
+    const existing = this.#colorByKey.get(key);
+    if (existing) return existing;
+    const color = PALETTE[this.#colorByKey.size % PALETTE.length];
+    this.#colorByKey.set(key, color);
+    return color;
+  }
+
+  /** The palette color assigned to a participant, or null if unknown. */
+  colorOf(id) {
+    return this.participants.get(id)?.color ?? null;
   }
 
   setRoom(code) {
@@ -122,6 +157,8 @@ export class RoomState {
       name: name ?? 'guest',
       fp: fp ?? null,
       role: restored ?? role ?? this.#defaultRole,
+      // Keyed guests color by fingerprint (restored on reconnect); keyless by id.
+      color: this.#assignColor(fp ?? id),
       cols: undefined,
       rows: undefined,
     };

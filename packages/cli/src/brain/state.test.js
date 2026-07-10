@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RoomState, ROLE_RANK, atLeast, FLOOR_COLS, FLOOR_ROWS, HOST_ID } from './state.js';
+import { RoomState, ROLE_RANK, atLeast, FLOOR_COLS, FLOOR_ROWS, HOST_ID, PALETTE } from './state.js';
 
 // ── role ranking ────────────────────────────────────────────────────────────
 
@@ -103,6 +103,63 @@ test('the latest role held wins when a key reconnects more than once', () => {
   s.removeGuest('c2');
   const g3 = s.addGuest('c3', { name: 'sid', fp: 'SHA256:sid', role: 'prompter' });
   assert.equal(g3.role, 'viewer', 'the most recent role is the one restored');
+});
+
+// ── stable participant colors (palette of 8, per fingerprint) ──────────────────
+
+test('the palette has 8 distinct colors', () => {
+  assert.equal(PALETTE.length, 8);
+  assert.equal(new Set(PALETTE).size, 8, 'no duplicates');
+});
+
+test('the host and each guest get a color from the palette', () => {
+  const s = new RoomState({ hostName: 'ian' });
+  assert.ok(PALETTE.includes(s.colorOf(HOST_ID)));
+  const g = s.addGuest('g1', { name: 'siddh', fp: 'SHA256:sid' });
+  assert.ok(PALETTE.includes(g.color));
+  assert.equal(s.colorOf('g1'), g.color);
+});
+
+test('distinct participants get distinct colors, assigned in palette order', () => {
+  const s = new RoomState();
+  const host = s.colorOf(HOST_ID);
+  const a = s.addGuest('a', { name: 'a', fp: 'SHA256:a' }).color;
+  const b = s.addGuest('b', { name: 'b', fp: 'SHA256:b' }).color;
+  assert.deepEqual([host, a, b], PALETTE.slice(0, 3));
+});
+
+test('a returning fingerprint keeps its color across reconnects', () => {
+  const s = new RoomState();
+  const first = s.addGuest('c1', { name: 'sid', fp: 'SHA256:sid' }).color;
+  s.removeGuest('c1');
+  // Someone else joins in between, taking the next palette slot…
+  s.addGuest('c2', { name: 'mallory', fp: 'SHA256:mal' });
+  // …then sid returns under a new connection id but the same key.
+  const again = s.addGuest('c3', { name: 'sid', fp: 'SHA256:sid' }).color;
+  assert.equal(again, first, 'the color is reused for the returning fingerprint');
+});
+
+test('keyless guests get a session-only color that is not remembered', () => {
+  const s = new RoomState();
+  const g1 = s.addGuest('c1', { name: 'anon', fp: null });
+  assert.ok(PALETTE.includes(g1.color));
+  s.removeGuest('c1');
+  // A new keyless seat is a fresh assignment (a later palette slot), never restored.
+  s.addGuest('c2', { name: 'other', fp: 'SHA256:o' });
+  const g3 = s.addGuest('c3', { name: 'anon2', fp: null });
+  assert.ok(PALETTE.includes(g3.color));
+});
+
+test('colorOf returns null for an unknown participant', () => {
+  const s = new RoomState();
+  assert.equal(s.colorOf('nobody'), null);
+});
+
+test('colors wrap around the palette beyond 8 participants', () => {
+  const s = new RoomState(); // host takes slot 0
+  for (let i = 0; i < 8; i++) s.addGuest(`g${i}`, { name: `g${i}`, fp: `SHA256:${i}` });
+  // slot 8 wraps to PALETTE[0] (same hue as the host); assignment never throws.
+  assert.equal(s.colorOf('g7'), PALETTE[0]);
 });
 
 // ── mode & pause ──────────────────────────────────────────────────────────────
