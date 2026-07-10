@@ -603,6 +603,14 @@ function main() {
       },
     });
     term.open(termEl);
+    // The mirror is read-only, but xterm still focuses its hidden helper textarea on
+    // click and its keydown handler swallows every key it gets — which silently ate
+    // all direct-mode input. Make the helper unfocusable: keys then land on the
+    // composer/document, where OUR handlers route them (drafts or direct-to-Claude).
+    if (term.textarea) {
+      term.textarea.disabled = true;
+      term.textarea.tabIndex = -1;
+    }
     const ro = new ResizeObserver(() => fit());
     ro.observe(stage);
     window.addEventListener('resize', fit);
