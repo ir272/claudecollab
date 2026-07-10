@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>claude-share</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✦</text></svg>" />
+    <link rel="stylesheet" href="/assets/css/xterm.css" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <!-- ── join / knock / waiting ─────────────────────────────────────────── -->
+    <section id="join" class="screen">
+      <div class="join-card">
+        <div class="brand"><span class="brand-mark">✦</span> claude&#8288;-&#8288;share</div>
+        <p class="tagline">Jump into a live Claude Code session — together.</p>
+
+        <form id="join-form" autocomplete="off">
+          <label class="field">
+            <span class="field-label">Room</span>
+            <div id="join-room" class="room-code" hidden></div>
+            <input id="code-input" class="text-input" type="text" placeholder="brave-otter" hidden />
+          </label>
+          <label class="field">
+            <span class="field-label">Your name</span>
+            <input id="name-input" class="text-input" type="text" maxlength="24" placeholder="e.g. sid" />
+          </label>
+          <button id="knock-btn" class="btn primary block" type="submit">Knock to join</button>
+          <p id="join-status" class="join-status"></p>
+        </form>
+
+        <div id="waiting" class="waiting" hidden>
+          <div class="spinner" aria-hidden="true"></div>
+          <p id="waiting-text">Knocking — waiting for the host to let you in…</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── live session ───────────────────────────────────────────────────── -->
+    <section id="live" class="screen live" hidden>
+      <header id="statusbar">
+        <span class="sb-brand">✦ claude-share</span>
+        <span class="sb-item">room <b id="sb-room">—</b></span>
+        <span class="sb-item" id="sb-people">—</span>
+        <span class="sb-spacer"></span>
+        <span class="sb-role" id="sb-role">viewer</span>
+      </header>
+
+      <div id="dc-banner" class="dc-banner" hidden>
+        <span>Disconnected from the room.</span>
+        <button id="dc-retry" class="btn tiny primary">Reconnect</button>
+      </div>
+
+      <main class="workspace">
+        <div class="left">
+          <div id="stage">
+            <div id="term"></div>
+            <div id="cursors" aria-hidden="true"></div>
+            <div id="paused" class="paused-card" hidden>
+              <div class="paused-inner">
+                <div class="paused-icon">⏸</div>
+                <div>Sharing is paused</div>
+                <small>The host stepped away from the mirror for a moment.</small>
+              </div>
+            </div>
+          </div>
+
+          <section id="tray" class="tray">
+            <div class="tray-top">
+              <span id="claude-chip" class="chip claude idle">Claude is idle</span>
+              <button id="new-draft" class="btn tiny ghost" type="button">+ New draft</button>
+            </div>
+            <div id="drafts" class="drafts"></div>
+            <div id="queue" class="queue" hidden></div>
+            <div class="composer-row">
+              <textarea
+                id="composer"
+                class="composer"
+                rows="1"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="Type to compose — your words appear in the draft above…"
+              ></textarea>
+              <span id="composer-hint" class="composer-hint"></span>
+            </div>
+            <p id="viewer-note" class="viewer-note" hidden>
+              You're a viewer — ask the host for a role to type.
+            </p>
+          </section>
+        </div>
+
+        <!-- ── host-only controls ───────────────────────────────────────────── -->
+        <aside id="host-panel" class="host-panel" hidden>
+          <div class="panel-group">
+            <h3 class="panel-title">Knocking</h3>
+            <div id="knocks" class="knocks"></div>
+          </div>
+          <div class="panel-group">
+            <h3 class="panel-title">In the room</h3>
+            <div id="roster" class="roster"></div>
+          </div>
+          <div class="panel-group panel-actions">
+            <button id="pause-btn" class="btn block ghost" type="button">Pause sharing</button>
+            <button id="end-btn" class="btn block danger" type="button">End session</button>
+            <div id="end-confirm" class="end-confirm" hidden></div>
+          </div>
+        </aside>
+      </main>
+    </section>
+
+    <script src="/assets/lib/xterm.js"></script>
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>
