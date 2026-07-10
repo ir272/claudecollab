@@ -651,3 +651,23 @@ test('deleteBox removes a whole draft, cursors and all', () => {
   assert.equal(d.activeBox('james'), null);
   assert.equal(d.deleteBox('nope'), false);
 });
+
+test('placeBox stores shared, clamped stage fractions; null goes home', () => {
+  const d = new Drafts();
+  const id = d.startDraft('ian');
+  assert.equal(d.placeBox(id, { x: 0.25, y: 1.7, w: 0.4 }), true);
+  assert.deepEqual(d.boxes[0].place, { x: 0.25, y: 1, w: 0.4 });
+  assert.ok(d.snapshot().boxes[0].place, 'placement rides the snapshot');
+  d.placeBox(id, null);
+  assert.equal(d.boxes[0].place, null);
+  assert.equal(d.placeBox('nope', { x: 0, y: 0 }), false);
+});
+
+test('seedDraft starts a focused draft pre-filled with the text', () => {
+  const d = new Drafts();
+  const id = d.seedDraft('ian', 'fix the nav\nthen tests');
+  const box = d.activeBox('ian');
+  assert.equal(box.id, id);
+  assert.equal(box.text, 'fix the nav\nthen tests');
+  assert.equal(d.cursorOf('ian').pos, box.atoms.length, 'caret lands at the end');
+});

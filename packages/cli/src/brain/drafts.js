@@ -183,6 +183,7 @@ export class Drafts {
           cursors: Object.fromEntries(b.cursors),
           caretOffsets,
           authors: [...b.authors],
+          place: b.place ?? null,
         };
       }),
     };
@@ -268,6 +269,34 @@ export class Drafts {
     this.#splice(box, m.start, pos - m.start, toCharAtoms(`@${name} `), userId);
     box.authors.add(userId);
     return { changed: true };
+  }
+
+  /**
+   * Move/resize a draft for EVERYONE (the ⠿ drag / ◢ resize are shared, live).
+   * Coordinates are fractions of the stage (resolution-independent); null → the
+   * home slot above Claude's input line.
+   * @param {string} boxId
+   * @param {{x:number,y:number,w?:number}|null} spot
+   */
+  placeBox(boxId, spot) {
+    const box = this.#boxById(boxId);
+    if (!box) return false;
+    if (spot == null) {
+      box.place = null;
+      return true;
+    }
+    const f = (v) => Math.max(0, Math.min(1, Number(v) || 0));
+    box.place = { x: f(spot.x), y: f(spot.y), ...(spot.w != null ? { w: f(spot.w) } : {}) };
+    return true;
+  }
+
+  /** Start a fresh draft pre-filled with text (a queued prompt pulled back to edit). */
+  seedDraft(userId, text) {
+    const id = this.startDraft(userId);
+    const box = this.#boxById(id);
+    this.#splice(box, 0, 0, toCharAtoms(String(text ?? '')), userId);
+    box.authors.add(userId);
+    return id;
   }
 
   /** Delete a whole draft box (the ✕ on a draft), cursors and all. */
@@ -495,7 +524,7 @@ export class Drafts {
   }
 
   #attach(userId) {
-    const box = { id: `d${++this.#seq}`, atoms: [], cursors: new Map([[userId, 0]]), authors: new Set() };
+    const box = { id: `d${++this.#seq}`, atoms: [], cursors: new Map([[userId, 0]]), authors: new Set(), place: null };
     // `text` (collapsed display) and `expanded` (real, paste-expanded) are live
     // getters over atoms, so callers and the renderer read them without a method.
     Object.defineProperty(box, 'text', { enumerable: true, get: () => displayText(box) });

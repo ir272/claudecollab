@@ -113,6 +113,8 @@ function isUiAction(a) {
   if (a.kind === 'caret') return isStr(a.id) && isNum(a.offset); // click into a draft
   if (a.kind === 'delrange') return isStr(a.id) && isNum(a.start) && isNum(a.end); // delete a selection
   if (a.kind === 'deldraft') return isStr(a.id); // delete a whole draft box
+  if (a.kind === 'place') return isStr(a.id) && (a.home === true || (isNum(a.x) && isNum(a.y))); // move/resize a draft (shared)
+  if (a.kind === 'unqueue') return isNum(a.n); // pull a queued prompt back into a draft
   return false;
 }
 

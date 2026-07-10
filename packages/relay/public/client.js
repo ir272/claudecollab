@@ -270,7 +270,16 @@ export function draftView(box, pById, selfId) {
     self: uid === selfId,
   }));
   const focusedBySelf = selfId != null && Object.prototype.hasOwnProperty.call(caretOffsets, selfId);
-  return { id: box?.id, text, authors, carets, focusedBySelf, segments: segmentBox(text, carets) };
+  return {
+    id: box?.id,
+    text,
+    authors,
+    carets,
+    focusedBySelf,
+    segments: segmentBox(text, carets),
+    // Shared placement (stage fractions) — everyone sees a moved box in the same spot.
+    place: box?.place ?? null,
+  };
 }
 
 /**
@@ -399,11 +408,12 @@ function main() {
   // Direct mode is DERIVED, not toggled: a driver with no draft focused types
   // straight into Claude. Updated from every state frame.
   let directOn = false;
-  // Floating-draft placement: per-viewer, session-local. boxId -> {x, y, w} px
-  // within the stage; a box with no entry sits "home" above Claude's input line.
-  const place = new Map();
-  let pendingSpawn = null; // stage-relative {x,y} for the next box I author (dblclick)
+  // Draft placement is SHARED (brain-owned, stage fractions). Client state here is
+  // only for interaction smoothness: the box being dragged and the spawn point of
+  // a double-clicked draft (mailed as a place action once the box exists).
+  let pendingSpawn = null; // stage-fraction {x,y} for the next box I author (dblclick)
   let draggingDraft = false; // renders skip while a draft is mid-drag
+  let placeLast = 0; // throttle for streaming place actions during a drag
 
   // ── DOM handles ──────────────────────────────────────────────────────────────
   const joinScreen = $('#join');
@@ -774,9 +784,9 @@ function main() {
     const v = lastState ? overlayView(lastState, selfId) : null;
     if (!v?.canCompose) return;
     const r = stage.getBoundingClientRect();
-    pendingSpawn = { x: e.clientX - r.left, y: e.clientY - r.top };
+    pendingSpawn = { x: clamp01((e.clientX - r.left) / r.width), y: clamp01((e.clientY - r.top) / r.height) };
     sendKey(NEW_DRAFT_BYTES);
-    setTimeout(focusComposer, 0);
+    setTimeout(() => composer.focus(), 0);
   });
 
   // Keys over a standing drag-selection (the catcher is blurred then, so these land
@@ -811,7 +821,7 @@ function main() {
   });
   newDraftBtn.addEventListener('click', () => {
     sendKey(NEW_DRAFT_BYTES);
-    focusComposer();
+    composer.focus(); // straight to the catcher — the new box is already yours
   });
 
   // ── host controls ────────────────────────────────────────────────────────────
@@ -891,8 +901,15 @@ function main() {
     if (!lastState) return;
     const v = overlayView(lastState, selfId);
     // Direct is derived: a driver with no draft focused types straight into Claude.
-    directOn = v.canDrive && !v.drafts.some((d) => d.focusedBySelf);
+    const selfComposing = v.drafts.some((d) => d.focusedBySelf);
+    directOn = v.canDrive && !selfComposing;
     directBtn.hidden = !directOn; // a passive "keys go into Claude" indicator
+    // Composing → the key catcher must hold focus, so typing lands in the draft
+    // without a manual click (unless a drag-selection is standing).
+    if (selfComposing && !composer.disabled && document.activeElement !== composer) {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) composer.focus();
+    }
     ghostHint(v);
     applyView(v);
     renderStatusbar(v);
@@ -969,14 +986,20 @@ function main() {
     lastDraftsJson = json;
     draftsLayer.innerHTML = '';
     for (const [i, d] of v.drafts.entries()) {
-      // A box I just spawned by double-click lands where I clicked.
-      if (pendingSpawn && d.focusedBySelf && !place.has(d.id) && d.text === '') {
-        place.set(d.id, { x: pendingSpawn.x, y: pendingSpawn.y });
+      // A box I just spawned by double-click lands where I clicked — for everyone.
+      if (pendingSpawn && d.focusedBySelf && !d.place && d.text === '') {
+        sendMsg({ t: 'ui', action: { kind: 'place', id: d.id, ...pendingSpawn } });
+        d.place = pendingSpawn; // optimistic, until the next state frame confirms
         pendingSpawn = null;
       }
       const box = el('div', 'fdraft' + (d.focusedBySelf ? ' focused' : ''));
+      // Someone ELSE is writing in it → the ring glows in their color.
+      if (!d.focusedBySelf && d.carets.length > 0) {
+        box.classList.add('edited');
+        box.style.setProperty('--ec', d.carets[0].color);
+      }
       box.dataset.boxId = d.id;
-      placeDraft(box, d.id, i);
+      placeDraft(box, d, i);
 
       const bar = el('div', 'fbar');
       bar.append(el('span', 'grip', '⠿'));
@@ -985,12 +1008,10 @@ function main() {
         pill.style.setProperty('--c', a.color);
         bar.append(pill);
       }
-      if (d.focusedBySelf) bar.append(el('span', 'send-hint', '↵ sends'));
       if (v.canCompose) {
         const del = el('button', 'draft-x', '✕');
         del.type = 'button';
         del.title = 'delete this draft';
-        if (!d.focusedBySelf) del.style.marginLeft = 'auto';
         del.onclick = () => sendMsg({ t: 'ui', action: { kind: 'deldraft', id: d.id } });
         bar.append(del);
       }
@@ -1010,14 +1031,12 @@ function main() {
       const rsz = el('span', 'rsz', '◢');
       box.append(bar, body, rsz);
 
-      // Move: drag the ⠿ bar. Resize: drag the ◢ corner. Both are per-viewer.
-      // Double-click the bar snaps the box back home above the input line.
+      // Move: drag the ⠿ bar. Resize: drag the ◢ corner. Both are SHARED — the box
+      // travels on everyone's screen. Double-click the bar snaps it back home.
       bar.addEventListener('pointerdown', (e) => beginDraftDrag(e, box, d.id, 'move'));
       rsz.addEventListener('pointerdown', (e) => beginDraftDrag(e, box, d.id, 'size'));
       bar.addEventListener('dblclick', () => {
-        place.delete(d.id);
-        lastDraftsJson = ''; // force a re-render back to the home slot
-        render();
+        sendMsg({ t: 'ui', action: { kind: 'place', id: d.id, home: true } });
       });
       // Clicks never fall through to the terminal beneath.
       box.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -1037,21 +1056,22 @@ function main() {
     }
   }
 
-  // Apply a draft's per-viewer placement: an explicit {x,y,w}, or the home slot
-  // (pinned above Claude's input line, stacking upward by index).
-  function placeDraft(box, id, i) {
-    const p = place.get(id);
+  // Apply a draft's SHARED placement (stage fractions from the brain), or the home
+  // slot (pinned above Claude's input line, stacking upward by index).
+  function placeDraft(box, d, i) {
+    const p = d.place;
     if (!p) {
       box.classList.add('home');
       box.style.setProperty('--stack', String(i));
       return;
     }
+    const r = stage.getBoundingClientRect();
     box.classList.remove('home');
-    box.style.left = p.x + 'px';
-    box.style.top = p.y + 'px';
+    box.style.left = (p.x * r.width).toFixed(1) + 'px';
+    box.style.top = (p.y * r.height).toFixed(1) + 'px';
     box.style.bottom = 'auto';
     box.style.transform = 'none';
-    if (p.w) box.style.width = p.w + 'px';
+    if (p.w) box.style.width = Math.max(220, p.w * r.width).toFixed(1) + 'px';
   }
 
   function beginDraftDrag(e, box, id, mode) {
@@ -1062,20 +1082,35 @@ function main() {
     const boxRect = box.getBoundingClientRect();
     const start = { x: e.clientX, y: e.clientY };
     const orig = { x: boxRect.left - stageRect.left, y: boxRect.top - stageRect.top, w: boxRect.width };
-    const move = (ev) => {
+    let last = null;
+    const spot = (ev) => {
       const dx = ev.clientX - start.x;
       const dy = ev.clientY - start.y;
-      const cur =
-        mode === 'move'
-          ? { ...(place.get(id) ?? {}), x: orig.x + dx, y: orig.y + dy }
-          : { x: orig.x, y: orig.y, w: Math.max(220, orig.w + dx) };
-      place.set(id, cur);
-      placeDraft(box, id, 0);
+      // Width always travels with the spot — a move must not reset a prior resize
+      // (the brain stores the whole placement object).
+      const px = mode === 'move' ? { x: orig.x + dx, y: orig.y + dy, w: orig.w } : { x: orig.x, y: orig.y, w: Math.max(220, orig.w + dx) };
+      return { x: clamp01(px.x / stageRect.width), y: clamp01(px.y / stageRect.height), w: clamp01(px.w / stageRect.width) };
+    };
+    const move = (ev) => {
+      last = spot(ev);
+      // Local styling immediately (smooth), streamed to the room at ≤30/s.
+      box.classList.remove('home');
+      box.style.left = (last.x * stageRect.width).toFixed(1) + 'px';
+      box.style.top = (last.y * stageRect.height).toFixed(1) + 'px';
+      box.style.bottom = 'auto';
+      box.style.transform = 'none';
+      if (last.w) box.style.width = (last.w * stageRect.width).toFixed(1) + 'px';
+      const now = Date.now();
+      if (throttleReady(placeLast, now, 33)) {
+        placeLast = now;
+        sendMsg({ t: 'ui', action: { kind: 'place', id, ...last } });
+      }
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       draggingDraft = false;
+      if (last) sendMsg({ t: 'ui', action: { kind: 'place', id, ...last } }); // final spot
       lastDraftsJson = ''; // re-sync with the latest state now that the drag ended
       render();
     };
@@ -1157,10 +1192,13 @@ function main() {
       chip.append(el('span', 'queue-n', '#' + q.n), who, el('span', 'queue-text', q.text));
       const act = el('span', 'queue-act');
       if (q.isMine) {
+        // Edit = pull the prompt out of the queue and back into a draft box,
+        // focused and ready to type — no browser dialogs.
         const edit = el('button', 'ctrl tiny', 'edit');
         edit.onclick = () => {
-          const t = window.prompt('Edit your queued prompt:', q.text);
-          if (t != null && t.trim()) sendCommand(`/queue edit ${q.n} ${t.trim()}`);
+          sendMsg({ t: 'ui', action: { kind: 'unqueue', n: q.n } });
+          queuePop.hidden = true;
+          composer.focus();
         };
         act.append(edit);
       }

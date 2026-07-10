@@ -746,6 +746,27 @@ async function main() {
       if (drafts.deleteRange(id, action.id, action.start, action.end)) repaintBand();
       return;
     }
+    // Move/resize a draft — SHARED: everyone sees the box travel live. Placement
+    // is stage-fraction coordinates; home:true snaps it back above the input line.
+    // No band repaint — the terminal status line doesn't carry draft geometry.
+    if (action.kind === 'place') {
+      if (!atLeast(role, 'prompter')) return;
+      const spot = action.home ? null : { x: action.x, y: action.y, w: action.w };
+      if (drafts.placeBox(action.id, spot)) scheduleState();
+      return;
+    }
+    // "Edit" on a queued item: pull it OUT of the queue and back into a fresh
+    // draft box, focused on the requester. Author-only, like /queue edit.
+    if (action.kind === 'unqueue') {
+      const item = queue.items[Math.trunc(action.n) - 1];
+      if (!item) return notify(id, `no queued item #${action.n}`);
+      if (item.author !== id) return notify(id, 'you can only edit your own queued item');
+      queue.remove(item.id, id, role);
+      drafts.seedDraft(id, item.text);
+      log.event(`${nameOf(id)} pulled queued item back to a draft`);
+      repaintBand();
+      return;
+    }
     // The ✕ on a draft box: authors delete their own; a driver or the host, any.
     if (action.kind === 'deldraft') {
       if (!atLeast(role, 'prompter')) return;
