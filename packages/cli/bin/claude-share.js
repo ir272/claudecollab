@@ -699,6 +699,13 @@ async function main() {
       repaintBand();
       return;
     }
+    // A mouse click inside a draft box: place that user's caret there (joining the
+    // box if it isn't theirs). Composing is prompter+, same as typing into it.
+    if (action.kind === 'caret') {
+      if (!atLeast(role, 'prompter')) return;
+      if (drafts.placeCaret(id, action.id, action.offset)) repaintBand();
+      return;
+    }
     if (action.kind === 'command') routeSend(id, { text: String(action.text) });
   };
 

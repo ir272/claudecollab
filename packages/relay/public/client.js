@@ -89,7 +89,21 @@ export function b64encode(str) {
 export function keyToBytes(e = {}) {
   const { key } = e;
   if (!key) return null;
-  // Never translate a Ctrl/Cmd combo — let the browser own copy/paste/etc.
+  // The mac editing chords, translated to the readline bytes the draft editor
+  // decodes: ⌘⌫ kill-to-line-start, ⌘←/→ home/end. Everything else with Ctrl/Cmd
+  // stays with the browser (copy/paste/reload are never hijacked).
+  if (e.metaKey && !e.ctrlKey && !e.altKey) {
+    switch (key) {
+      case 'Backspace':
+        return '\x15';
+      case 'ArrowLeft':
+        return '\x1b[H';
+      case 'ArrowRight':
+        return '\x1b[F';
+      default:
+        return null;
+    }
+  }
   if (e.ctrlKey || e.metaKey) return null;
   switch (key) {
     case 'Enter':
@@ -644,12 +658,14 @@ function main() {
     if (v && v.canCompose && !composer.disabled) composer.focus();
   }
   composer.addEventListener('keydown', (e) => {
-    if (e.ctrlKey || e.metaKey) return; // let the browser own its shortcuts
-    const bytes = keyToBytes(e);
+    const bytes = keyToBytes(e); // maps the ⌘ editing chords too, so ask it first
     if (bytes != null) {
       e.preventDefault();
       sendKey(bytes);
-    } else if (e.key.length === 1) {
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) return; // let the browser own its shortcuts
+    if (e.key.length === 1) {
       // an unhandled printable with a modifier we don't map — swallow so the
       // catcher stays empty, but send nothing.
       e.preventDefault();
@@ -823,8 +839,35 @@ function main() {
       }
       box.append(border, body);
       if (d.focusedBySelf) box.append(el('span', 'send-hint', '↵ sends'));
+      // Click anywhere in a draft to put your caret there (blank space → the end).
+      // The brain owns the caret — we only mail the display offset we hit.
+      box.addEventListener('mousedown', (e) => {
+        if (e.target.closest('button')) return;
+        const off = clickCharOffset(body, e.clientX, e.clientY);
+        sendMsg({ t: 'ui', action: { kind: 'caret', id: d.id, offset: off == null ? d.text.length : off } });
+        setTimeout(focusComposer, 0);
+      });
       trayDrafts.append(box);
     }
+  }
+
+  // Translate a click inside a draft body into a display-character offset. Caret
+  // spans hold no text, so the body's text nodes concatenate to exactly the draft's
+  // display text. A miss (blank padding, no hit test API) returns null → end.
+  function clickCharOffset(bodyEl, x, y) {
+    const p = document.caretPositionFromPoint
+      ? document.caretPositionFromPoint(x, y)
+      : document.caretRangeFromPoint
+        ? document.caretRangeFromPoint(x, y)
+        : null;
+    if (!p) return null;
+    const node = 'offsetNode' in p ? p.offsetNode : p.startContainer;
+    const off = 'offsetNode' in p ? p.offset : p.startOffset;
+    if (!node || node.nodeType !== Node.TEXT_NODE || !bodyEl.contains(node)) return null;
+    let total = 0;
+    const walker = document.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n && n !== node; n = walker.nextNode()) total += n.nodeValue.length;
+    return total + off;
   }
 
   function renderQueue(v) {

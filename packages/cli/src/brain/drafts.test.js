@@ -583,3 +583,38 @@ test('Buffer input is accepted, not just strings', () => {
   d.keystroke('ian', Buffer.from('hi', 'utf8'));
   assert.equal(only(d).text, 'hi');
 });
+
+// ── placeCaret (a browser mouse click inside a draft) ─────────────────────────
+
+test('placeCaret puts the caret at a display offset in the clicked box', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'hello world');
+  const id = d.activeBox('ian').id;
+  assert.equal(d.placeCaret('ian', id, 5), true);
+  assert.equal(d.cursorOf('ian').pos, 5);
+  d.placeCaret('ian', id, 999); // past the end clamps to the end
+  assert.equal(d.cursorOf('ian').pos, 11);
+});
+
+test('placeCaret joins another box (leaving the old one) — click-to-co-write', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'first');
+  const target = d.activeBox('ian').id;
+  d.keystroke('james', 'second');
+  assert.equal(d.placeCaret('james', target, 2), true);
+  assert.equal(d.cursorOf('james').boxId, target);
+  assert.equal(d.cursorOf('james').pos, 2);
+  assert.equal(d.boxes.length, 2); // james' own non-empty draft survives
+});
+
+test('placeCaret snaps to a paste token edge, never inside it', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'a\x1b[200~two\nlines\x1b[201~b'); // atoms: a, [paste], b
+  const box = d.activeBox('ian');
+  const tokenWidth = '[pasted 2 lines]'.length;
+  d.placeCaret('ian', box.id, 1 + 2); // 2 chars into the token → nearest edge (start)
+  assert.equal(d.cursorOf('ian').pos, 1);
+  d.placeCaret('ian', box.id, 1 + tokenWidth - 2); // near its far edge → after it
+  assert.equal(d.cursorOf('ian').pos, 2);
+  assert.equal(d.placeCaret('ian', 'nope', 0), false); // unknown box refused
+});

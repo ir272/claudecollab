@@ -110,6 +110,7 @@ function isUiAction(a) {
   if (a.kind === 'admit' || a.kind === 'deny' || a.kind === 'kick') return isStr(a.id);
   if (a.kind === 'role') return isStr(a.id) && isStr(a.role);
   if (a.kind === 'command') return isStr(a.text);
+  if (a.kind === 'caret') return isStr(a.id) && isNum(a.offset); // click into a draft
   return false;
 }
 

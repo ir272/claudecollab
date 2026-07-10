@@ -206,6 +206,33 @@ export class Drafts {
     return true;
   }
 
+  /**
+   * Place a user's caret at a display-text offset inside a draft (a mouse click in
+   * a browser tab). The offset is in display characters (the same space as
+   * snapshot().caretOffsets); a click inside a collapsed paste token snaps to its
+   * nearest edge — a caret can never live inside one atom.
+   */
+  placeCaret(userId, boxId, offset) {
+    const box = this.#boxById(boxId);
+    if (!box) return false;
+    if (this.activeBox(userId) !== box) this.#leaveCurrent(userId);
+    const want = Math.max(0, Math.trunc(Number(offset) || 0));
+    let seen = 0;
+    let pos = 0;
+    for (const a of box.atoms) {
+      const w = atomDisplay(a).length;
+      if (want >= seen + w) {
+        seen += w;
+        pos += 1;
+        continue;
+      }
+      if (want - seen > w / 2) pos += 1; // past the midpoint → land after the atom
+      break;
+    }
+    box.cursors.set(userId, pos);
+    return true;
+  }
+
   /** Fill an open @mention with @name plus a trailing space; closes the mention. */
   completeMention(userId, name) {
     const m = this.mentionOf(userId);
