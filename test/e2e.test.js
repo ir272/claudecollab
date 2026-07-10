@@ -124,7 +124,7 @@ function connectGuest(port, { code, privateKey, keyboard } = {}) {
   });
 }
 
-test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, kick, /end', { timeout: 90000 }, async (t) => {
+test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, kick, /end', { timeout: 180000 }, async (t) => {
   // ── the relay (the "brainless" front door) ─────────────────────────────────
   const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey(), hostName: 'ian' });
   t.after(() => relay.close());
@@ -184,7 +184,11 @@ test('e2e: host + 2 guests through a local relay — join, draft, queue, gate, k
   });
 
   // ── room code (from the invite toast the CLI paints once connected) ─────────
-  await host.waitFor('room ready · invite: ssh ');
+  // Cold start is the slow step: spawn node, load node-pty (native), serve the hook
+  // socket, ssh to the relay, get a room. Under heavy parallel load the process can
+  // be CPU-starved for many seconds before it paints, so give this one wait ample
+  // headroom (every later step is sub-second once booted).
+  await host.waitFor('room ready · invite: ssh ', 60000);
   const m = host.get().match(/ssh ([a-z]+-[a-z]+)@127\.0\.0\.1/);
   assert.ok(m, 'invite line carries an adjective-animal room code');
   const code = m[1];
