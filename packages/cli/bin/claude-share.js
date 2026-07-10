@@ -368,6 +368,34 @@ async function main() {
     repaintBand();
   };
 
+  // ── roster mutations, targeted by participant id ──────────────────────────────
+  // Both the host tab's roster buttons ({t:'ui'} role/kick, carrying the id) and the
+  // /role /kick text commands (which resolve a @-mention to an id first) funnel here,
+  // so the mutation is identical and never re-parses a claimed name (finding 4). Return
+  // false on an unresolved/illegal target so the caller can word its own error.
+  function applyRole(actorId, targetId, role) {
+    if (!targetId || !state.setRole(targetId, role)) return false; // setRole refuses host/unknown
+    const msg = `${nameOf(actorId)} set ${state.nameOf(targetId)} to ${role} ${ROLE_GLYPH[role] ?? ''}`;
+    log.event(msg);
+    showToast(msg);
+    return true;
+  }
+  function applyKick(actorId, targetId) {
+    if (!targetId || targetId === HOST_ID || !state.get(targetId)) return false;
+    const name = state.nameOf(targetId);
+    relay?.drop(targetId, true); // ban=true blocklists the fingerprint
+    state.removeGuest(targetId);
+    drafts.removeUser(targetId);
+    queue.removeByAuthor(targetId);
+    knockInfo.delete(targetId);
+    pointers.delete(targetId);
+    recomputeClamp();
+    const msg = `${name} was kicked`;
+    log.event(msg);
+    showToast(msg);
+    return true;
+  }
+
   // ── claude-share commands ─────────────────────────────────────────────────────
   function handleCommand(userId, text) {
     const role = state.roleOf(userId) ?? 'viewer';
@@ -384,33 +412,21 @@ async function main() {
     const by = nameOf(userId);
     switch (parsed.name) {
       case 'role': {
+        // Text-command path keeps @-mention resolution (and its name-specific error);
+        // the mutation itself is the shared, id-based applyRole (finding 4).
         const targetId = resolveMention(state, parsed.mention);
-        if (!targetId || !state.setRole(targetId, parsed.role)) {
+        if (!applyRole(userId, targetId, parsed.role)) {
           notify(userId, `can't set @${parsed.mention} to ${parsed.role}`);
           return;
         }
-        const msg = `${by} set ${state.nameOf(targetId)} to ${parsed.role} ${ROLE_GLYPH[parsed.role] ?? ''}`;
-        log.event(msg);
-        showToast(msg);
         break;
       }
       case 'kick': {
         const targetId = resolveMention(state, parsed.mention);
-        if (!targetId || targetId === HOST_ID) {
+        if (!applyKick(userId, targetId)) {
           notify(userId, `can't kick @${parsed.mention}`);
           return;
         }
-        const name = state.nameOf(targetId);
-        relay?.drop(targetId, true); // ban=true blocklists the fingerprint
-        state.removeGuest(targetId);
-        drafts.removeUser(targetId);
-        queue.removeByAuthor(targetId);
-        knockInfo.delete(targetId);
-        pointers.delete(targetId);
-        recomputeClamp();
-        const msg = `${name} was kicked`;
-        log.event(msg);
-        showToast(msg);
         break;
       }
       case 'pause': {
@@ -569,6 +585,20 @@ async function main() {
     if (action.kind === 'admit' || action.kind === 'deny') {
       if (!atLeast(role, 'host')) return notify(id, 'only the host can admit or deny knocks');
       answerKnockById(action.id, action.kind === 'admit');
+      return;
+    }
+    // Roster buttons carry the target's participant id (not a name), so a duplicate or
+    // space/unicode name can never mis-target a kick/role change (finding 4).
+    if (action.kind === 'role') {
+      if (!atLeast(role, 'host')) return notify(id, 'only the host can set roles');
+      if (!applyRole(id, action.id, action.role)) notify(id, "can't set that role");
+      repaintBand();
+      return;
+    }
+    if (action.kind === 'kick') {
+      if (!atLeast(role, 'host')) return notify(id, 'only the host can kick');
+      if (!applyKick(id, action.id)) notify(id, "can't kick that participant");
+      repaintBand();
       return;
     }
     if (action.kind === 'command') routeSend(id, { text: String(action.text) });

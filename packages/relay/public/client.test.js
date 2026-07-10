@@ -30,6 +30,8 @@ import {
   segmentBox,
   draftView,
   overlayView,
+  roleAction,
+  kickAction,
 } from './client.js';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -119,6 +121,14 @@ test('claudeLabel / seenLabel / shortFp', () => {
   assert.equal(seenLabel('sid'), 'seen before as sid');
   assert.equal(shortFp('SHA256:abcdefghijklmnopqrstuvwxyz'), 'abcdefghijkl…');
   assert.equal(shortFp(''), '');
+});
+
+test('roleAction/kickAction target the participant id, never the claimed name (finding 4)', () => {
+  // Two guests can claim the SAME name; the roster action must carry the unambiguous id.
+  assert.deepEqual(roleAction('g2', 'driver'), { t: 'ui', action: { kind: 'role', id: 'g2', role: 'driver' } });
+  assert.deepEqual(kickAction('g2'), { t: 'ui', action: { kind: 'kick', id: 'g2' } });
+  // The id is used verbatim even when a name has spaces / non-word chars (un-mentionable).
+  assert.equal(kickAction('uuid-with-space-name').action.id, 'uuid-with-space-name');
 });
 
 test('byId builds an id → participant map', () => {

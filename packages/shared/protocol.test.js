@@ -139,6 +139,9 @@ test('validate accepts well-formed messages', () => {
     { t: 'ui', action: { kind: 'deny', id: 'k1' } },
     { t: 'ui', action: { kind: 'command', text: '/pause' } },
     { t: 'ui', id: 'g1', action: { kind: 'command', text: '/role @x driver' } },
+    // roster actions target a participant id (not a @-mention) so duplicate names can't mis-target
+    { t: 'ui', id: 'host', action: { kind: 'role', id: 'g2', role: 'driver' } },
+    { t: 'ui', id: 'host', action: { kind: 'kick', id: 'g2' } },
   ];
   for (const m of good) assert.equal(validate(m), true, JSON.stringify(m));
 });
@@ -183,6 +186,11 @@ test('validate rejects malformed messages', () => {
     { t: 'ui', action: { kind: 'command' } }, // command needs text
     { t: 'ui', action: { kind: 'command', text: 5 } }, // text must be a string
     { t: 'ui', id: 7, action: { kind: 'command', text: '/pause' } }, // sender id must be a string
+    { t: 'ui', action: { kind: 'kick' } }, // kick needs a target id
+    { t: 'ui', action: { kind: 'kick', id: 7 } }, // target id must be a string
+    { t: 'ui', action: { kind: 'role', id: 'g2' } }, // role is missing
+    { t: 'ui', action: { kind: 'role', role: 'driver' } }, // target id is missing
+    { t: 'ui', action: { kind: 'role', id: 'g2', role: 7 } }, // role must be a string
   ];
   for (const m of bad) assert.equal(validate(m), false, JSON.stringify(m));
 });

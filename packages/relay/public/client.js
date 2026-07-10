@@ -123,6 +123,23 @@ export function pasteBytes(text) {
   return PASTE_START + String(text ?? '') + PASTE_END;
 }
 
+/**
+ * Roster actions carry the target's PARTICIPANT id, never its claimed display name.
+ * Names are guest-claimed and non-unique (a second guest can claim an existing name),
+ * and a name with spaces or non-word characters can't be @-mentioned at all — so a
+ * name-based /role or /kick could hit the wrong person or nobody. The id is unambiguous
+ * and the brain applies it directly, bypassing @-mention resolution (finding 4).
+ * @param {string} id    the participant id (from the overlay state)
+ * @param {string} role  driver | prompter | viewer
+ */
+export function roleAction(id, role) {
+  return { t: 'ui', action: { kind: 'role', id, role } };
+}
+/** @param {string} id the participant id to kick+ban. */
+export function kickAction(id) {
+  return { t: 'ui', action: { kind: 'kick', id } };
+}
+
 /** Clamp a number into [0,1] (NaN → 0). */
 export function clamp01(v) {
   const n = Number(v);
@@ -858,9 +875,10 @@ function main() {
           if (r === p.role) opt.selected = true;
           sel.append(opt);
         }
-        sel.onchange = () => sendCommand(`/role @${p.name} ${sel.value}`);
+        // Target by id, not @name: names are guest-claimed and non-unique (finding 4).
+        sel.onchange = () => sendMsg(roleAction(p.id, sel.value));
         const kick = el('button', 'btn tiny ghost', 'Kick');
-        kick.onclick = () => sendCommand(`/kick @${p.name}`);
+        kick.onclick = () => sendMsg(kickAction(p.id));
         row.append(sel, kick);
       }
       rosterBox.append(row);

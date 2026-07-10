@@ -100,12 +100,15 @@ const isStr = (v) => typeof v === 'string';
 const isNum = (v) => Number.isFinite(v);
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-// A {t:'ui'} action: a knock verdict (admit/deny, carrying the target knock id) or
-// a button-driven command (carrying the command text). Anything else is rejected —
-// this is the boundary that lets a browser button drive the host, so it fails closed.
+// A {t:'ui'} action: a knock verdict (admit/deny, carrying the target knock id), a
+// roster action (role/kick, carrying the target PARTICIPANT id — not a @-mention, so
+// duplicate/space/unicode names can't mis-target), or a button-driven command (command
+// text). Anything else is rejected — this is the boundary that lets a browser button
+// drive the host, so it fails closed.
 function isUiAction(a) {
   if (!isObj(a)) return false;
-  if (a.kind === 'admit' || a.kind === 'deny') return isStr(a.id);
+  if (a.kind === 'admit' || a.kind === 'deny' || a.kind === 'kick') return isStr(a.id);
+  if (a.kind === 'role') return isStr(a.id) && isStr(a.role);
   if (a.kind === 'command') return isStr(a.text);
   return false;
 }
