@@ -192,7 +192,10 @@ async function main() {
   } catch (err) {
     process.stderr.write(
       `collab: could not start "${opts.cmd}": ${err.message}\n` +
-        'If this is a native-module error, run `npm rebuild node-pty` where this package is installed.\n',
+        'A "posix_spawnp failed" here usually means node-pty\'s spawn-helper lost its execute bit\n' +
+          '(package managers that skip install scripts do this). Fix:\n' +
+          '  chmod +x "$(npm root -g)/@claudecollab/cli/node_modules/node-pty/prebuilds/"*/spawn-helper\n' +
+          'Otherwise check that the wrapped command exists on your PATH.\n',
     );
     process.exit(1);
   }
