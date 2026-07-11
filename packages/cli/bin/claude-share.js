@@ -959,10 +959,14 @@ async function main() {
       copyInvite(inviteRoomUrl(code), (copied) => showToast(readyToast(copied), 15000));
     });
     r.onGone(() => {
-      // Reclaim refused: the 10-min TTL lapsed or the room truly ended. Nothing to
-      // return to — drop the code so onClose won't keep retrying, and finish solo.
+      // Reclaim refused: the 10-min TTL lapsed, the relay restarted (fresh
+      // registry), or the room truly ended. Nothing to return to — drop the code
+      // AND its links (a dead URL on the band reads as a live room), finish solo.
       state.setRoom(null);
+      currentUrl = null;
+      inviteUrlStr = null;
       showToast('the room expired while disconnected — continuing solo', 8000);
+      repaintBand();
     });
     r.onKnock((knock) => {
       // The host's own browser tab knocks with fp `webhost:<token>`. Auto-admit it as
