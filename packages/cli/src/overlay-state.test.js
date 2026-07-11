@@ -184,3 +184,60 @@ test('overlay-state: host emits state; ui admit / pointer / ui command (gated) r
 
   assert.equal(stderr.trim(), '', `CLI emitted no errors:\n${stderr}`);
 });
+
+test('overlay-state: a paused room freezes a prompter’s crafted {ui,command} prompt', { timeout: 60000 }, async (t) => {
+  const relay = await startFakeRelay('calm-lynx');
+  t.after(() => relay.close());
+
+  const homeDir = mkdtempSync(join(tmpdir(), 'cs-pause-home-'));
+  t.after(() => {
+    try {
+      rmSync(homeDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  const cli = spawn(
+    process.execPath,
+    [cliEntry, '--relay', `ssh://127.0.0.1:${relay.port}`, '--no-hooks', '--cmd', 'cat', '--guests', 'prompter'],
+    { env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' } },
+  );
+  let stderr = '';
+  cli.stderr.on('data', (d) => (stderr += d.toString()));
+  t.after(() => {
+    try {
+      cli.kill();
+    } catch {}
+  });
+
+  // Admit a prompter (the role that can drive Claude).
+  await relay.waitFor((m) => m.t === TYPES.STATE && m.data.room === relay.code, 30000);
+  relay.send({ t: TYPES.KNOCK, id: 'g1', name: 'mallory', fp: 'SHA256:m', seen: null });
+  await relay.waitFor((m) => m.t === TYPES.STATE && m.data.knocks.some((k) => k.id === 'g1'));
+  relay.send({ t: TYPES.UI, id: 'host', action: { kind: 'admit', id: 'g1' } });
+  await relay.waitFor((m) => m.t === TYPES.ADMIT && m.id === 'g1');
+  relay.send({ t: TYPES.JOINED, id: 'g1' });
+  await relay.waitFor((m) => m.t === TYPES.STATE && findParticipant(m, 'g1')?.role === 'prompter');
+
+  // Host pauses the room.
+  relay.send({ t: TYPES.UI, id: 'host', action: { kind: 'command', text: '/pause' } });
+  await relay.waitFor((m) => m.t === TYPES.STATE && m.data.paused === true);
+
+  // The attack: a prompter sends a plain prompt via the one channel handleUi keeps
+  // open during pause (kind:'command', so the host can /resume). It must NOT reach
+  // Claude — the brain answers the sender with a "paused" notice instead.
+  relay.send({ t: TYPES.UI, id: 'g1', action: { kind: 'command', text: 'INJECTED-WHILE-PAUSED' } });
+  const notice = await relay.waitFor(
+    (m) => m.t === TYPES.STATE && m.data.notice?.id === 'g1' && /paused/i.test(m.data.notice.msg || ''),
+  );
+  assert.match(notice.data.notice.msg, /paused/i, 'the prompter is told sharing is paused, not run');
+  assert.equal(notice.data.paused, true, 'the room is still paused');
+
+  // The injected text must never have been broadcast as a screen frame (cat would
+  // have echoed it had it reached Claude; the mirror is frozen while paused anyway).
+  const leaked = relay.received.some(
+    (m) => m.t === TYPES.SCREEN && Buffer.from(m.data, 'base64').toString('utf8').includes('INJECTED-WHILE-PAUSED'),
+  );
+  assert.equal(leaked, false, 'the paused prompt never reached Claude');
+
+  assert.equal(stderr.trim(), '', `CLI emitted no errors:\n${stderr}`);
+});

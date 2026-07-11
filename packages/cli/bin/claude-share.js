@@ -512,6 +512,17 @@ async function main() {
 
     if (cls.kind === 'command') return handleCommand(userId, text);
 
+    // Pause must freeze EVERY guest path to Claude, not just raw keystrokes
+    // (onKey already bails on pause). A crafted {ui,command} rides the one channel
+    // left open during pause — handleUi allows kind:'command' so the host can
+    // /resume — and those management commands returned above via handleCommand.
+    // Anything still here is Claude-bound (prompt / claude-slash / bash) and must
+    // be frozen, or a prompter could keep driving Claude while sharing reads paused.
+    if (state.paused) {
+      notify(userId, 'sharing is paused — the host will resume shortly');
+      return;
+    }
+
     if (!sendAllowed(cls.kind, role)) {
       const what = cls.kind === 'bash' ? 'run bash' : cls.kind === 'claude-slash' ? 'use slash commands' : 'send that';
       notify(userId, `you can't ${what} — ask the host for a role that can type`);
