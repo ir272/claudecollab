@@ -4,11 +4,11 @@
 
 Think **screen-share where they can type too**.
 
-<p align="center"><img src="docs/demo.gif" alt="a host shares a session; a guest joins from a browser and types into the same Claude" width="720"></p>
+<!-- demo gif goes here once captured: docs/demo.gif (host shares a session; a guest joins from a browser and types into the same Claude) -->
 
 ```mermaid
 flowchart LR
-    H["you (host)<br/>terminal runs Claude"] <--> R["relay<br/>forwards bytes, stores nothing"]
+    H["you (host)<br/>terminal runs Claude"] <--> R["relay<br/>forwards bytes, nothing to disk"]
     R <--> HT["your host tab<br/>(admit · roles · pause · end)"]
     R <--> G["friends' browsers"]
 ```
@@ -49,7 +49,7 @@ Want a lock in front of the knock? Host with `collab --room-password <pw>` — g
 - **+ draft** (or double-click) opens a floating glass box. Everyone's caret shows; Enter sends; Esc steps out; drag ⠿ to move, ◢ to resize, ✕ to delete.
 - Sent while Claude is busy? It waits in the **queue** chip — edit or delete before it fires.
 - Scroll the mirror like a real terminal. Scrolling is shared — one screen for everyone.
-- Reloaded guests glide straight back in. Kicked guests are out for good.
+- Reloaded guests glide straight back in. Kicked guests lose the room; a room password (below) is the real lock if you need one.
 
 ## The one thing to really understand
 
@@ -113,7 +113,7 @@ test/              end-to-end: host + host tab + guest on localhost
 
 - The CLI wraps Claude in a PTY one row short — the bottom row is the status line.
 - State (busy/idle/ask) comes from injected Claude Code hooks, never screen-scraping. Ambiguity fails closed.
-- The relay stores nothing: kill it and the host reconnects; kill the host and the room is over.
+- The relay persists nothing to disk — rooms, names, and any room password live only in process memory (kill it and the host reconnects; kill the host and the room is over). It does relay your screen bytes in transit, so treat it like a screen-share, not a vault — or self-host your own.
 
 </details>
 
