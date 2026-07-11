@@ -5,17 +5,19 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
 
 ## Deployed state (2026-07-11)
 
-- Relay live at **https://claudeshare.fly.dev** (Fly app `claudeshare`, region dfw)
-- Host command: `node packages/cli/bin/claude-share.js --relay ssh://claudeshare.fly.dev:2222`
+- Relay live at **https://claudecollab.org** (Fly app `claudeshare`, region dfw;
+  claudeshare.fly.dev still answers). Certs: apex + www, Let's Encrypt via fly
+- Host command: `node packages/cli/bin/claude-share.js --relay ssh://claudecollab.org:2222`
+  (ssh door rides the same A record; needs CLAUDE_SHARE_SECRET in the environment)
+- Relay ssh fingerprint (pin/verify): `SHA256:K2JkcwxqpWo5F+CP5q5Ke7RGTZYgjJ7tE/ajEajxdxY`
 - **Exactly ONE machine, always** (`fly scale count 1`) — rooms live in the relay
   process's memory; Fly auto-adds a second machine on fresh deploys, scale it back
 - A redeploy/restart ends all live rooms (hosts drop to solo) — deploy between sessions
 - Deploy with `fly deploy` from the repo root; the dashboard's GitHub deployer fails opaquely
 - Dedicated IPv4 168.220.81.240 ($2/mo, required for the raw-TCP ssh door) + IPv6
 - `HOST_KEY` secret set (regen: `node packages/relay/bin/serve.js --make-key`)
-- **ROOM_SECRET not yet set on Fly** — room creation is still open until
-  `fly secrets set ROOM_SECRET=…` + redeploy (ends live rooms — do it between
-  sessions). Hosts then need `CLAUDE_SHARE_SECRET` (or `--secret`)
+- ROOM_SECRET set on Fly (2026-07-11) — room creation is gated; Ian's
+  CLAUDE_SHARE_SECRET lives in his ~/.zshrc
 - The CLI pins the relay's ssh fingerprint on first connect
   (`~/.claude-share/known_relays.json`, TOFU; `--fingerprint` pins explicitly;
   loopback exempt). Rotating HOST_KEY makes every host refuse until they clear
@@ -50,9 +52,8 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
    (available + collision-free 2026-07-11; coterm.co, ptyparty.co also clear).
    Framing rule regardless: "collaborate on a live session," never "share your
    Claude subscription."
-2. Buy claudecollab.org (Ian's card, ~$11/yr) → `fly certs add claudecollab.org`,
-   DNS records per fly's instructions, update PUBLIC_URL in fly.toml + redeploy
-   (between sessions — restart ends live rooms; set ROOM_SECRET in the same restart)
+2. DONE 2026-07-11: claudecollab.org bought (Namecheap), certs issued (apex+www),
+   A/AAAA → dedicated IPs, PUBLIC_URL switched, ROOM_SECRET activated — one deploy
 2a. Community relay (decided direction 2026-07-11): claudecollab.org doubles as the
    free public relay so OSS users get "install → run → share a link" with zero
    infra (the tmate/sshx/Syncthing model; terminal bytes are cheap, ~$7/mo until
@@ -63,8 +64,8 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
    field; wrong guesses burn tryKnock slots; host tab exempt; knock/admit stays
    the final gate). Keep Ian's private secret-gated mode working from the same
    code path.
-3. Relay hardening — DONE in code (HELLO room secret + relay-key pinning, 2026-07-11);
-   what's left is ops: set ROOM_SECRET on Fly (see deployed state above)
+3. DONE 2026-07-11 (code + ops): relay hardening — HELLO room secret + relay-key
+   pinning shipped; ROOM_SECRET live on Fly
 4. Rust single-binary CLI for `brew install`-style distribution — only if it doesn't
    force an architecture change; port the relay first (protocol tests = spec), the CLI
    port (pty/ssh/hooks/brain) is the heavy half
