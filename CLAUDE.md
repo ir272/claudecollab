@@ -38,21 +38,21 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
 
 ## Backlog (parked, in priority order)
 
-1. Name DECIDED 2026-07-11: **claudecollab.co** — Ian's call, trademark risk
-   accepted knowingly ("if it gets traction we'll worry; if it doesn't, it doesn't
-   matter"). The risk, for the record: CLAUDE is a registered mark (USPTO #7645254)
-   and Anthropic enforced even a phonetic near-miss (Clawdbot→Moltbot→OpenClaw,
-   Jan 2026), so traction likely ⇒ forced rename / possible UDRP loss of the domain.
-   Contingency: keep the brand SKIN-DEEP (domain + landing copy only — don't bake
-   the name into binary names, protocol strings, or config paths) so a rename is a
-   DNS change, not a migration. Pre-cleared fallback name if that day comes:
-   **barge.sh** (checked available + collision-free 2026-07-11; coterm.co and
-   ptyparty.co also clear). Marketing framing still matters regardless of name:
-   "collaborate on a live session," never "share your Claude subscription"
-   (consumer-terms account-sharing gray zone).
-2. Buy claudecollab.co (Ian's card) → `fly certs add claudecollab.co`, DNS records
-   per fly's instructions, update PUBLIC_URL in fly.toml + redeploy (between
-   sessions — restart ends live rooms)
+1. Direction DECIDED 2026-07-11: **free open-source project, not a business.**
+   MIT license (LICENSE committed). Domain **claudecollab.org** = landing page
+   with a GitHub link; the deliverable is "install one command, run it" (makes
+   backlog #4, the Rust single binary, the headline item). No accounts, no
+   payments, no hosted platform. Trademark risk accepted knowingly by Ian —
+   OSS/free does NOT immunize the name (Clawdbot was free OSS and was still
+   forced to rename); if traction draws enforcement, rename then. Contingency:
+   keep the brand SKIN-DEEP (domain + landing copy only — never in binary names,
+   protocol strings, or config paths). Pre-cleared fallback: **barge.sh**
+   (available + collision-free 2026-07-11; coterm.co, ptyparty.co also clear).
+   Framing rule regardless: "collaborate on a live session," never "share your
+   Claude subscription."
+2. Buy claudecollab.org (Ian's card, ~$11/yr) → `fly certs add claudecollab.org`,
+   DNS records per fly's instructions, update PUBLIC_URL in fly.toml + redeploy
+   (between sessions — restart ends live rooms; set ROOM_SECRET in the same restart)
 3. Relay hardening — DONE in code (HELLO room secret + relay-key pinning, 2026-07-11);
    what's left is ops: set ROOM_SECRET on Fly (see deployed state above)
 4. Rust single-binary CLI for `brew install`-style distribution — only if it doesn't
