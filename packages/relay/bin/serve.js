@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Production entry for a DEPLOYED relay (Fly.io, a VPS, …) — env-driven config:
 //
-//   WEB_PORT    browser door (http + ws)            default 8080
+//   WEB_PORT    browser door (http + ws)            default 8787 (the CLI's default)
 //   SSH_PORT    ssh door (the host CLI connects)    default 2222
 //   PUBLIC_URL  public https origin for links       e.g. https://claude-share.fly.dev
 //   HOST_KEY    ssh host key, PEM contents          set as a secret; see below
@@ -24,7 +24,7 @@ if (process.argv.includes('--make-key')) {
   process.exit(0);
 }
 
-const webPort = Number(process.env.WEB_PORT || 8080);
+const webPort = Number(process.env.WEB_PORT || 8787);
 const sshPort = Number(process.env.SSH_PORT || 2222);
 const publicUrl = process.env.PUBLIC_URL || undefined;
 const hostName = process.env.HOST_NAME || 'claude-share';
