@@ -12,15 +12,15 @@
 #   fly certs add claudeshare.dev   # then point DNS (CNAME → this app) as instructed
 #   ...and update PUBLIC_URL to https://claudeshare.dev
 
-app = "claude-share-relay"
-primary_region = "sjc"
+app = "claudeshare"
+primary_region = "dfw"
 
 [build]
 
 [env]
   WEB_PORT = "8080"
   SSH_PORT = "2222"
-  PUBLIC_URL = "https://claude-share-relay.fly.dev"
+  PUBLIC_URL = "https://claudeshare.fly.dev"
 
 # Browser door: TLS terminates at Fly's edge, plain http+ws reaches the relay.
 [[services]]
