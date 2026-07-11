@@ -1,8 +1,10 @@
-# claude-share
+# ✦ claudecollab
 
-**Make your Claude Code session multiplayer.** You run one command. Friends open a link — no install — and drive the same Claude with you: live cursors, shared drafts, a visible queue, roles.
+**Multiplayer for your Claude Code session.** You run one command. Friends open a link — no install — and drive the same Claude with you: live cursors, shared drafts, a visible queue, roles.
 
 Think **screen-share where they can type too**.
+
+<p align="center"><img src="docs/demo.gif" alt="a host shares a session; a guest joins from a browser and types into the same Claude" width="720"></p>
 
 ```mermaid
 flowchart LR
@@ -13,41 +15,14 @@ flowchart LR
 
 Your terminal stays plain Claude plus one status line. Everything multiplayer happens in the browser.
 
-## Run it locally
+## Host a session
 
 ```bash
-npm install
+npm install -g @claudecollab/cli
+collab
 ```
 
-**Terminal 1 — relay:**
-
-```bash
-node packages/relay/bin/serve.js
-```
-
-**Terminal 2 — host:**
-
-```bash
-node packages/cli/bin/claude-share.js --relay ssh://127.0.0.1:2222
-```
-
-Open the link from the status line — that's your host tab. The invite link is on your clipboard.
-
-## Deploy the relay (permanent links)
-
-```bash
-fly launch --no-deploy      # keep the provided fly.toml
-fly secrets set HOST_KEY="$(node packages/relay/bin/serve.js --make-key)"
-fly secrets set ROOM_SECRET="$(openssl rand -hex 16)"
-fly deploy
-```
-
-Then host with `--relay ssh://your-app.fly.dev:2222`. Links print your public https origin automatically.
-
-Two protections kick in on a deployed relay:
-
-- **Room secret** — with `ROOM_SECRET` set, only hosts that present it (`CLAUDE_SHARE_SECRET` env or `--secret`) can create rooms; strangers who find your relay can't. Guests are unaffected — they enter with a room link.
-- **Identity pinning** — the CLI pins the relay's ssh key fingerprint on first connect (like ssh's `known_hosts`) and refuses to connect if it ever changes, so nobody can impersonate your relay. The relay prints its fingerprint at boot; pass it as `--fingerprint SHA256:…` to pin explicitly. Loopback relays are exempt (dev relays regenerate keys).
+That's it. `collab` wraps your normal `claude` and prints your room link on the status line — that's **your** tab (admit people, manage roles). The invite link lands on your clipboard — that's the one you share. Friends need nothing but a browser.
 
 ## Two links — don't mix them up
 
@@ -58,9 +33,7 @@ Two protections kick in on a deployed relay:
 
 The Invite button and your clipboard always hold the safe one.
 
-Want a lock in front of the knock? Host with `--room-password <pw>` — guests must
-enter it (browser field / ssh prompt) before their request ever reaches you.
-Admitting stays your call either way.
+Want a lock in front of the knock? Host with `collab --room-password <pw>` — guests must enter it before their request ever reaches you. Admitting stays your call either way.
 
 ## Roles
 
@@ -82,10 +55,48 @@ Admitting stays your call either way.
 
 A guest prompt **runs on your machine, as you**. Admitting someone = trusting them with your Claude under the current mode. The relay sees your screen — treat a room like a screen-share, not a vault. You have **Pause** and **End** (with an optional `session.md` receipt).
 
-## Tests
+## Self-host the relay
+
+`collab` defaults to the community relay at claudecollab.org. Rather run your own? The same package ships the server:
 
 ```bash
-npm test
+collab-relay                              # local: ssh :2222 · web :8787
+collab --relay ssh://127.0.0.1:2222       # host through it
+```
+
+For a permanent public relay (Fly.io, any VPS — see `fly.toml` in this repo):
+
+```bash
+fly launch --no-deploy
+fly secrets set HOST_KEY="$(collab-relay --make-key)"
+fly secrets set ROOM_SECRET="$(openssl rand -hex 16)"   # optional: gate room creation
+fly deploy
+```
+
+Two protections are built in:
+
+- **Room secret** — with `ROOM_SECRET` set, only hosts that present it (`CLAUDE_SHARE_SECRET` env or `--secret`) can create rooms. Guests are unaffected — they enter with a room link.
+- **Identity pinning** — the CLI pins the relay's ssh key fingerprint on first connect (like ssh's `known_hosts`) and refuses to connect if it ever changes. The relay prints its fingerprint at boot; pin explicitly with `--fingerprint SHA256:…`.
+
+## Flags
+
+| Flag | What it does |
+|---|---|
+| `--relay <url>` | relay to use (`ssh://host:port`); default is the community relay |
+| `--no-relay` | solo mode — no room, no relay, just Claude with the band |
+| `--room-password <pw>` | guests must present this before they can knock |
+| `--guests <role>` | role given to newly admitted guests (default `prompter`) |
+| `--secret <s>` | room-creation credential for a `ROOM_SECRET`-gated relay (or `CLAUDE_SHARE_SECRET` env) |
+| `--fingerprint <fp>` | pin the relay's ssh key explicitly (default: trust-on-first-use) |
+| `--cmd <program>` | wrap something other than `claude` |
+| `-- <args…>` | everything after `--` passes through to the wrapped program |
+
+## Develop
+
+```bash
+npm install
+npm test           # full suite: protocol, relay, brain, e2e
+scripts/rig.sh     # local relay + host wrapping a fake claude (UI work)
 ```
 
 <details>
@@ -106,4 +117,8 @@ test/              end-to-end: host + host tab + guest on localhost
 
 </details>
 
-**TL;DR:** relay up → `claude-share` → open your link, share the invite. Guests need nothing. Roles keep control; prompts are real — admit people you trust.
+## License
+
+[MIT](LICENSE). claudecollab is an independent open-source project — not affiliated with or endorsed by Anthropic. *Claude* is a trademark of Anthropic, PBC; this tool wraps the official Claude Code client you already have installed.
+
+**TL;DR:** `npm i -g @claudecollab/cli` → `collab` → share the invite link. Guests need nothing. Roles keep control; prompts are real — admit people you trust.

@@ -10,7 +10,10 @@ COPY package.json package-lock.json ./
 COPY packages/relay/package.json packages/relay/
 COPY packages/shared/package.json packages/shared/
 COPY packages/cli/package.json packages/cli/
-RUN npm ci --omit=dev --workspace=packages/relay
+# --ignore-scripts: the root manifest lists node-pty (a native module, for the
+# published CLI) — the relay never imports it, and slim has no toolchain to
+# build it. Skipping install scripts keeps this image pure-JS.
+RUN npm ci --omit=dev --workspace=packages/relay --ignore-scripts
 
 # The relay imports ../shared/protocol.js relatively — ship both packages.
 COPY packages/relay packages/relay
