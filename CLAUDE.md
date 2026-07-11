@@ -26,6 +26,12 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
 ## Dev & testing
 
 - `npm test` — full suite, keep it green
+- Ian's Mac blocks npm install scripts (allow-scripts policy) → node-pty's
+  spawn-helper lands non-executable and every pty spawn dies with
+  "posix_spawnp failed" (looks like 7 e2e failures / a broken `collab`).
+  Fix: `chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper`.
+  pnpm users hit the same by default — the CLI's error hint now covers it;
+  consider a runtime self-heal (chmod+retry) and publishing 0.1.1 with it.
 - `scripts/rig.sh` — local relay + host wrapping a FAKE claude (test/fixtures/fake-claude.cjs),
   ports **2226 (ssh) / 8788 (web)**; `scripts/rig-real.sh` — same with the real claude
 - Never use ports 2222/8787/8080 for test rigs — those are Ian's live/dev ports
