@@ -32,6 +32,7 @@ import { paint, ROLE_GLYPH } from '../src/renderer.js';
 import { ScreenSnapshot } from '../src/screen-snapshot.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
 import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js';
+import { createPinCheck } from '../src/known-relays.js';
 import { hostUrl, inviteUrl, readyToast } from '../src/invite.js';
 import { createPartitioner } from '../src/term-chatter.js';
 import { RoomState, HOST_ID, atLeast, FLOOR_COLS, FLOOR_ROWS } from '../src/brain/state.js';
@@ -51,6 +52,10 @@ function parseArgs(argv) {
     cmd: 'claude',
     hooks: true,
     guests: 'prompter', // default role for a newly admitted guest (spec default)
+    // Room-creation credential — required by a relay running with ROOM_SECRET.
+    // Env beats a flag for real use (a flag shows in `ps`); the flag wins if both.
+    secret: process.env.CLAUDE_SHARE_SECRET || undefined,
+    fingerprint: undefined, // explicit relay key pin (SHA256:…); default is TOFU
     childArgs: [],
   };
   const passthrough = [];
@@ -62,6 +67,8 @@ function parseArgs(argv) {
     else if (a === '--web-port') opts.webPort = Math.max(1, Number(argv[++i]) || opts.webPort);
     else if (a === '--cmd') opts.cmd = argv[++i];
     else if (a === '--guests') opts.guests = argv[++i] ?? opts.guests;
+    else if (a === '--secret') opts.secret = argv[++i] ?? opts.secret;
+    else if (a === '--fingerprint') opts.fingerprint = argv[++i] ?? opts.fingerprint;
     else if (a === '--') {
       passthrough.push(...argv.slice(i + 1));
       break;
@@ -152,6 +159,10 @@ async function main() {
   let reconnectTimer = null;
   let reconnectAttempts = 0;
   const MAX_RECONNECT = 8;
+  // A terminal relay verdict (REFUSED hello, or its ssh identity changed). Not
+  // transient — retrying is pointless (secret) or dangerous (impersonation), so
+  // this flag stops the reconnect loop for the rest of the run.
+  let relayVetoed = false;
 
   // ── hook-based state detection (Task 4) ─────────────────────────────────────
   const childArgs = [...opts.childArgs];
@@ -907,7 +918,13 @@ async function main() {
     if (action.kind === 'command') routeSend(id, { text: String(action.text) });
   };
 
-  const { host: RELAY_HOST } = parseRelayUrl(opts.relayUrl);
+  const { host: RELAY_HOST, port: RELAY_PORT } = parseRelayUrl(opts.relayUrl);
+  // Relay identity pinning (TOFU, like ssh known_hosts; --fingerprint pins
+  // explicitly). Loopback is exempt unless a fingerprint was given: dev relays
+  // regenerate their key every boot, and loopback MITM is outside the threat
+  // model — a real relay is never at 127.0.0.1.
+  const RELAY_LOOPBACK = ['127.0.0.1', '::1', 'localhost'].includes(RELAY_HOST);
+  const PIN_FILE = path.join(os.homedir(), '.claude-share', 'known_relays.json');
   // Two URLs, deliberately kept apart (see src/invite.js). The host opens the hostUrl
   // (carries the token → auto-admit as host); the token-free inviteUrl is the safe link
   // to hand a friend. The status line shows the hostUrl (the host's own private
@@ -966,6 +983,17 @@ async function main() {
       currentUrl = null;
       inviteUrlStr = null;
       showToast('the room expired while disconnected — continuing solo', 8000);
+      repaintBand();
+    });
+    r.onRefused((reason) => {
+      // The relay rejected our HELLO outright. 'secret' = it requires a room
+      // secret we didn't present (or ours is wrong). Terminal, not transient.
+      relayVetoed = true;
+      const msg =
+        reason === 'secret'
+          ? 'relay requires a room secret — set CLAUDE_SHARE_SECRET (or --secret) and restart. running solo'
+          : `relay refused the connection (${reason}) — running solo`;
+      showToast(msg, 15000);
       repaintBand();
     });
     r.onKnock((knock) => {
@@ -1058,6 +1086,7 @@ async function main() {
     r.onClose(() => {
       if (exited || r !== relay) return; // a superseded instance's close is not ours
       relay = null;
+      if (relayVetoed) return; // refused/identity-mismatch — already explained, never retry
       scheduleReconnect();
     });
     r.onError(() => {}); // transport errors surface via onClose; never crash
@@ -1068,10 +1097,21 @@ async function main() {
   // CLI was missing. Failures on a held room retry within the TTL; an initial
   // failure just runs solo.
   function openRelay() {
-    if (exited) return;
+    if (exited || relayVetoed) return;
+    // Fresh pin check per attempt (it re-reads the store, picking up a pin the
+    // previous attempt just made). null = loopback dev relay, no verification.
+    const pin =
+      opts.fingerprint || !RELAY_LOOPBACK
+        ? createPinCheck({ key: `${RELAY_HOST}:${RELAY_PORT}`, file: PIN_FILE, expected: opts.fingerprint })
+        : null;
     let r;
     try {
-      r = connectRelay({ url: opts.relayUrl, privateKey: loadHostKey() });
+      r = connectRelay({
+        url: opts.relayUrl,
+        privateKey: loadHostKey(),
+        secret: opts.secret,
+        verifyHostKey: pin ? pin.verify : undefined,
+      });
     } catch (err) {
       if (state.room) return scheduleReconnect();
       process.stderr.write(`claude-share: relay setup failed (${err.message}); running solo\n`);
@@ -1087,6 +1127,20 @@ async function main() {
       })
       .catch((err) => {
         if (r === relay) relay = null;
+        if (pin?.outcome() === 'mismatch') {
+          // The relay presented a key that doesn't match our pin. Either the
+          // operator rotated it on purpose, or someone is impersonating the
+          // relay — refuse loudly either way and never auto-retry.
+          relayVetoed = true;
+          process.stderr.write(
+            `claude-share: RELAY IDENTITY CHANGED — refusing to connect.\n` +
+              `claude-share: pinned ${pin.expected()}, but ${RELAY_HOST}:${RELAY_PORT} presented ${pin.seen()}.\n` +
+              `claude-share: if the relay key was rotated on purpose, delete the "${RELAY_HOST}:${RELAY_PORT}"\n` +
+              `claude-share: entry in ${PIN_FILE} and restart. otherwise DO NOT connect.\n`
+          );
+          showToast('relay identity changed — refusing to connect (details in terminal). running solo', 15000);
+          return;
+        }
         if (state.room) scheduleReconnect(); // lost a held room — keep trying within TTL
         else process.stderr.write(`claude-share: relay unavailable (${err.message}); running solo\n`);
       });

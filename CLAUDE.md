@@ -13,6 +13,13 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
 - Deploy with `fly deploy` from the repo root; the dashboard's GitHub deployer fails opaquely
 - Dedicated IPv4 168.220.81.240 ($2/mo, required for the raw-TCP ssh door) + IPv6
 - `HOST_KEY` secret set (regen: `node packages/relay/bin/serve.js --make-key`)
+- **ROOM_SECRET not yet set on Fly** — room creation is still open until
+  `fly secrets set ROOM_SECRET=…` + redeploy (ends live rooms — do it between
+  sessions). Hosts then need `CLAUDE_SHARE_SECRET` (or `--secret`)
+- The CLI pins the relay's ssh fingerprint on first connect
+  (`~/.claude-share/known_relays.json`, TOFU; `--fingerprint` pins explicitly;
+  loopback exempt). Rotating HOST_KEY makes every host refuse until they clear
+  the pin — rotate deliberately
 
 ## Dev & testing
 
@@ -35,8 +42,8 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
    "claude" in a public domain name touches their trademark)
 2. Buy real domain (`claudeshare.dev`/`.sh`/`.app`; `.re` has EU-residency friction) →
    `fly certs add`, DNS records, update PUBLIC_URL in fly.toml
-3. Relay hardening if it goes public: host-side shared secret for room creation
-   (maxRooms=50 lid exists); CLI should pin/verify the relay's ssh host key
+3. Relay hardening — DONE in code (HELLO room secret + relay-key pinning, 2026-07-11);
+   what's left is ops: set ROOM_SECRET on Fly (see deployed state above)
 4. Rust single-binary CLI for `brew install`-style distribution — only if it doesn't
    force an architecture change; port the relay first (protocol tests = spec), the CLI
    port (pty/ssh/hooks/brain) is the heavy half

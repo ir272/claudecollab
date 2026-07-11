@@ -436,3 +436,38 @@ test('relay: maxRooms lids unauthenticated room creation (a public relay needs a
     return h.next((m) => m.t === TYPES.ROOM);
   }
 });
+
+test('relay: roomSecret gates room creation; reclaim stays key-gated, not secret-gated', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey(), roomSecret: 'hunter2' });
+  t.after(() => relay.close());
+  const port = relay.port;
+
+  // No secret → a machine-readable refusal (so the CLI can explain, not retry).
+  const bare = await connectHost(port);
+  bare.send({ t: TYPES.HELLO, want: 'room' });
+  const r1 = await bare.next((m) => m.t === TYPES.REFUSED || m.t === TYPES.ROOM);
+  assert.equal(r1.t, TYPES.REFUSED, 'a secretless hello is refused');
+  assert.equal(r1.reason, 'secret');
+
+  // Wrong secret → the same refusal.
+  const wrong = await connectHost(port);
+  wrong.send({ t: TYPES.HELLO, want: 'room', secret: 'guess' });
+  const r2 = await wrong.next((m) => m.t === TYPES.REFUSED || m.t === TYPES.ROOM);
+  assert.equal(r2.t, TYPES.REFUSED, 'a wrong secret is refused');
+
+  // The right secret → a room, exactly like an open relay.
+  const hostKey = newKey();
+  const good = await connectHost(port, hostKey);
+  good.send({ t: TYPES.HELLO, want: 'room', secret: 'hunter2' });
+  const room = await good.next((m) => m.t === TYPES.ROOM);
+  assert.match(room.code, /^[a-z]+-[a-z]+$/, 'the credentialed host gets a room');
+
+  // Reclaim is gated by the host KEY, not the secret: a mid-session secret
+  // rotation must not strand a live room's host after a wifi drop.
+  good.client.end();
+  const back = await connectHost(port, hostKey);
+  back.send({ t: TYPES.RECLAIM, code: room.code });
+  const room2 = await back.next((m) => m.t === TYPES.ROOM || m.t === TYPES.GONE);
+  assert.equal(room2.t, TYPES.ROOM, 'reclaim needs no secret');
+  assert.equal(room2.code, room.code);
+});

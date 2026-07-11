@@ -38,10 +38,16 @@ Open the link from the status line — that's your host tab. The invite link is 
 ```bash
 fly launch --no-deploy      # keep the provided fly.toml
 fly secrets set HOST_KEY="$(node packages/relay/bin/serve.js --make-key)"
+fly secrets set ROOM_SECRET="$(openssl rand -hex 16)"
 fly deploy
 ```
 
 Then host with `--relay ssh://your-app.fly.dev:2222`. Links print your public https origin automatically.
+
+Two protections kick in on a deployed relay:
+
+- **Room secret** — with `ROOM_SECRET` set, only hosts that present it (`CLAUDE_SHARE_SECRET` env or `--secret`) can create rooms; strangers who find your relay can't. Guests are unaffected — they enter with a room link.
+- **Identity pinning** — the CLI pins the relay's ssh key fingerprint on first connect (like ssh's `known_hosts`) and refuses to connect if it ever changes, so nobody can impersonate your relay. The relay prints its fingerprint at boot; pass it as `--fingerprint SHA256:…` to pin explicitly. Loopback relays are exempt (dev relays regenerate keys).
 
 ## Two links — don't mix them up
 

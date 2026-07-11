@@ -4,10 +4,11 @@
 
 /** Canonical message-type strings (the `t` field of every message). */
 export const TYPES = Object.freeze({
-  HELLO: 'hello', // host->relay: {t:'hello', want:'room'}          — new room
+  HELLO: 'hello', // host->relay: {t:'hello', want:'room', secret?} — new room (secret when the relay requires one)
   RECLAIM: 'reclaim', // host->relay: {t:'reclaim', code}           — take back an existing room after a drop
   ROOM: 'room', // relay->host: {t:'room', code}                    — room granted (create OR reclaim)
   GONE: 'gone', // relay->host: {t:'gone', code}                    — reclaim refused (expired / wrong key)
+  REFUSED: 'refused', // relay->host: {t:'refused', reason}         — HELLO rejected ('secret' = bad/missing room secret)
   KNOCK: 'knock', // relay->host: {t:'knock', id, name, fp, seen}
   ADMIT: 'admit', // host->relay: {t:'admit', id}
   DENY: 'deny', // host->relay: {t:'deny', id}
@@ -131,7 +132,11 @@ export function validate(obj) {
   if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return false;
   switch (obj.t) {
     case TYPES.HELLO:
-      return obj.want === 'room';
+      // secret (optional): the relay-wide room-creation credential. Compared on
+      // the relay when configured; a plain relay ignores it.
+      return obj.want === 'room' && (obj.secret === undefined || isStr(obj.secret));
+    case TYPES.REFUSED:
+      return isStr(obj.reason);
     case TYPES.ROOM:
       // webUrl (optional): a deployed relay's public browser base URL — the host
       // builds its printed/copied links from it instead of ssh-host:webPort.

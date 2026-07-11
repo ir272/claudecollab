@@ -3,7 +3,13 @@
 # First deploy (from the repo root):
 #   fly launch --no-deploy          # creates the app; KEEP this fly.toml when asked
 #   fly secrets set HOST_KEY="$(node packages/relay/bin/serve.js --make-key)"
+#   fly secrets set ROOM_SECRET="$(openssl rand -hex 16)"   # gate room creation
 #   fly deploy
+#
+# Hosts then need the secret (CLAUDE_SHARE_SECRET env or --secret) to create
+# rooms; without ROOM_SECRET set, anyone who finds the relay can. The boot log
+# prints the relay's ssh fingerprint — hosts pin it automatically (TOFU) or
+# explicitly via --fingerprint.
 #
 # If `fly launch` picks a different app name, update PUBLIC_URL below to match
 # (it must be the real public origin — it's what invite links print).

@@ -14,7 +14,7 @@
 
 import ssh2 from 'ssh2';
 import { readFileSync } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createRegistry } from './rooms.js';
 import { startWebDoor } from './web.js';
 import { sanitizeName } from './names.js';
@@ -29,6 +29,15 @@ const DEFAULT_TTL_MS = 10 * 60 * 1000; // spec: hold the code 10 min on host dro
 // Standard OpenSSH SHA256 fingerprint over the raw public-key blob.
 function fingerprint(keyData) {
   return 'SHA256:' + createHash('sha256').update(keyData).digest('base64').replace(/=+$/, '');
+}
+
+// Constant-time string comparison via digests (equal-length inputs for
+// timingSafeEqual, and no length leak from the secret itself).
+function secretsMatch(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const da = createHash('sha256').update(a).digest();
+  const db = createHash('sha256').update(b).digest();
+  return timingSafeEqual(da, db);
 }
 
 // Copy — kept plain and friendly (spec frames). CRLF for raw terminals.
@@ -96,6 +105,11 @@ export function startRelay(opts = {}) {
     // can HELLO), so a public relay needs a lid on how many rooms strangers can
     // pile up. Far above any real usage; a flood just gets its connection closed.
     maxRooms = 50,
+    // Room-creation credential. When set, a HELLO must carry a matching `secret`
+    // or it is REFUSED — strangers can't create rooms at all. RECLAIM stays
+    // ungated on purpose: it is already bound to the creating host's key
+    // fingerprint, and must keep working mid-session if the secret rotates.
+    roomSecret,
     registry: registryOpts = {},
   } = opts;
 
@@ -183,6 +197,14 @@ export function startRelay(opts = {}) {
       switch (msg.t) {
         case TYPES.HELLO: {
           if (code) return; // one room per host connection
+          if (roomSecret && !secretsMatch(msg.secret, roomSecret)) {
+            // Machine-readable refusal so the CLI can say "bad secret" instead
+            // of mistaking this for a dead relay and reconnect-looping.
+            safeWrite(stream, encode({ t: TYPES.REFUSED, reason: 'secret' }));
+            safeEnd(stream);
+            safeEnd(conn);
+            return;
+          }
           if (live.size >= maxRooms) {
             // Full: refuse by closing. The CLI's reconnect loop backs off; real
             // rooms expire on their 10-min TTL, so capacity frees itself.

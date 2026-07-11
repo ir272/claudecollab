@@ -15,6 +15,7 @@
 // the relay (spec §failure-behavior), so callers pass a persistent privateKey.
 
 import ssh2 from 'ssh2';
+import { createHash } from 'node:crypto';
 import { TYPES, encode, validate, Decoder } from '../../shared/protocol.js';
 
 const { Client, utils } = ssh2;
@@ -64,9 +65,15 @@ export function openingMove(heldRoom) {
  * @param {string|Buffer} [opts.privateKey]  host ssh private key (stable identity;
  *                                            an ephemeral one is generated if omitted)
  * @param {number} [opts.keepaliveInterval]  ssh keepalive ms (default 20s)
+ * @param {string} [opts.secret]             room-creation credential; rides every hello()
+ *                                            (a relay with ROOM_SECRET set requires it)
+ * @param {(fp:string)=>boolean} [opts.verifyHostKey]  called with the relay's SHA256:…
+ *                                            key fingerprint during the handshake; return
+ *                                            false to abort (impersonation defense).
+ *                                            Omitted = accept any key (dev/loopback).
  * @returns {{
  *   ready: Promise<void>,
- *   onRoom, onGone, onKnock, onJoin, onLeave, onKey, onResize, onPointer, onUi, onClose, onError,
+ *   onRoom, onGone, onRefused, onKnock, onJoin, onLeave, onKey, onResize, onPointer, onUi, onClose, onError,
  *   hello():void, reclaim(code):void,
  *   admit(id):void, deny(id):void,
  *   sendScreen(data):void, sendTo(id,data):void, sendState(data):void,
@@ -74,7 +81,7 @@ export function openingMove(heldRoom) {
  * }}
  */
 export function connectRelay(opts = {}) {
-  const { url, keepaliveInterval = 20000 } = opts;
+  const { url, keepaliveInterval = 20000, secret, verifyHostKey } = opts;
   const { host, port } = parseRelayUrl(url);
   // A stable key lets the host reclaim its room after a drop; if the caller has
   // none we still connect (relay rejects `none` auth) with a throwaway key —
@@ -88,6 +95,7 @@ export function connectRelay(opts = {}) {
   const sets = {
     room: new Set(),
     gone: new Set(),
+    refused: new Set(),
     knock: new Set(),
     join: new Set(),
     leave: new Set(),
@@ -135,6 +143,10 @@ export function connectRelay(opts = {}) {
         return emit('room', msg.code, msg.webUrl);
       case TYPES.GONE:
         return emit('gone', msg.code);
+      case TYPES.REFUSED:
+        // The relay rejected our HELLO (reason 'secret' = bad/missing room
+        // credential). Not transient — the caller should stop, not reconnect.
+        return emit('refused', msg.reason);
       case TYPES.KNOCK:
         return emit('knock', { id: msg.id, name: msg.name, fp: msg.fp, seen: msg.seen });
       case TYPES.JOINED:
@@ -192,7 +204,22 @@ export function connectRelay(opts = {}) {
         resolve();
       });
     });
-    client.connect({ host, port, username: 'host', privateKey, keepaliveInterval });
+    const connectOpts = { host, port, username: 'host', privateKey, keepaliveInterval };
+    if (verifyHostKey) {
+      // ssh2 hands the raw public-key blob to hostVerifier during the handshake;
+      // we reduce it to the standard SHA256:… fingerprint (same derivation the
+      // relay uses) so callers compare one printable string. Returning false
+      // aborts the connection before any bytes of ours reach an impersonator.
+      connectOpts.hostVerifier = (keyBlob) => {
+        const fp = 'SHA256:' + createHash('sha256').update(keyBlob).digest('base64').replace(/=+$/, '');
+        try {
+          return verifyHostKey(fp) === true;
+        } catch {
+          return false; // a throwing verifier must fail closed, not connect
+        }
+      };
+    }
+    client.connect(connectOpts);
   });
   // Nobody may await ready (fire-and-forget wiring); don't crash on a rejection.
   ready.catch(() => {});
@@ -202,6 +229,7 @@ export function connectRelay(opts = {}) {
 
     onRoom: on(sets.room), // (code)                       room granted (create or reclaim)
     onGone: on(sets.gone), // (code)                       reclaim refused (expired / wrong key)
+    onRefused: on(sets.refused), // (reason)               hello rejected ('secret'); don't reconnect
     onKnock: on(sets.knock), // ({id,name,fp,seen})        a guest is knocking
     onJoin: on(sets.join), // (id)                         a guest was admitted
     onLeave: on(sets.leave), // (id)                       a guest disconnected
@@ -212,7 +240,7 @@ export function connectRelay(opts = {}) {
     onClose: on(sets.close), // ()                         the control channel closed
     onError: on(sets.error), // (err)                      ssh transport error
 
-    hello: () => send({ t: TYPES.HELLO, want: 'room' }),
+    hello: () => send({ t: TYPES.HELLO, want: 'room', ...(secret ? { secret } : {}) }),
     reclaim: (code) => send({ t: TYPES.RECLAIM, code }),
     admit: (id) => send({ t: TYPES.ADMIT, id }),
     deny: (id) => send({ t: TYPES.DENY, id }),

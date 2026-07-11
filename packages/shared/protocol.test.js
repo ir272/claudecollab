@@ -110,10 +110,12 @@ test('Decoder caps an unterminated flood instead of buffering unbounded', () => 
 test('validate accepts well-formed messages', () => {
   const good = [
     { t: 'hello', want: 'room' },
+    { t: 'hello', want: 'room', secret: 'hunter2' }, // room-creation credential (relay w/ ROOM_SECRET)
     { t: 'reclaim', code: 'brave-otter' },
     { t: 'room', code: 'brave-otter' },
     { t: 'room', code: 'brave-otter', webUrl: 'https://claude-share.fly.dev' }, // deployed relay advertises its public origin
     { t: 'gone', code: 'brave-otter' },
+    { t: 'refused', reason: 'secret' }, // hello rejected (bad/missing room secret)
     { t: 'knock', id: 'g1', name: 'siddh', fp: 'a1', seen: false },
     { t: 'knock', id: 'g1', name: 'siddh', fp: 'a1', seen: 'siddh' },
     { t: 'knock', id: 'g1', name: 'siddh', fp: 'a1', seen: null },
@@ -160,6 +162,9 @@ test('validate rejects malformed messages', () => {
     {},
     { t: 'nope' },
     { t: 'hello', want: 'shell' },
+    { t: 'hello', want: 'room', secret: 42 }, // a secret must be a string
+    { t: 'refused' }, // missing reason
+    { t: 'refused', reason: 7 },
     { t: 'room' },
     { t: 'room', code: 5 },
     { t: 'reclaim' },

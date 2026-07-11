@@ -6,6 +6,9 @@
 //   PUBLIC_URL  public https origin for links       e.g. https://claude-share.fly.dev
 //   HOST_KEY    ssh host key, PEM contents          set as a secret; see below
 //   HOST_NAME   name shown in the ssh banner        default "claude-share"
+//   ROOM_SECRET room-creation credential            when set, only CLIs that send it
+//                                                   (--secret / CLAUDE_SHARE_SECRET)
+//                                                   can create rooms; unset = open
 //
 // HOST_KEY should be a PERSISTENT ed25519 private key (e.g. `fly secrets set
 // HOST_KEY="$(node packages/relay/bin/serve.js --make-key)"`). Without one we
@@ -13,6 +16,7 @@
 // "host identification changed" warning after every restart/redeploy.
 
 import process from 'node:process';
+import { createHash } from 'node:crypto';
 import ssh2 from 'ssh2';
 import { startRelay } from '../server.js';
 
@@ -36,6 +40,12 @@ if (!hostKey) {
   hostKey = utils.generateKeyPairSync('ed25519').private;
 }
 
+const roomSecret = process.env.ROOM_SECRET || undefined;
+if (!roomSecret) {
+  console.warn('serve: no ROOM_SECRET set — ANYONE who finds this relay can create rooms.');
+  console.warn('serve: set one (e.g. `fly secrets set ROOM_SECRET=…`) before sharing the address.');
+}
+
 const relay = await startRelay({
   host: '0.0.0.0', // containers route external traffic to us; bind everything
   port: sshPort,
@@ -44,9 +54,16 @@ const relay = await startRelay({
   hostKey,
   hostName,
   maxRooms: Number(process.env.MAX_ROOMS || 50),
+  roomSecret,
 });
 
+// The public-half fingerprint of our ssh identity. Safe to publish — hosts pin
+// this (--fingerprint / TOFU) to refuse relay impersonators.
+const pubBlob = utils.parseKey(hostKey).getPublicSSH();
+const fp = 'SHA256:' + createHash('sha256').update(pubBlob).digest('base64').replace(/=+$/, '');
+
 console.log(`relay up: ssh :${relay.port} · web :${relay.webPort}${publicUrl ? ` · public ${publicUrl}` : ''}`);
+console.log(`relay ssh fingerprint: ${fp}`);
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {

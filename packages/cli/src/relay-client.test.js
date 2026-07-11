@@ -231,3 +231,59 @@ test('relay-client: deny closes the knocking guest', async (t) => {
   await guest.onClose();
   assert.match(guest.getOut(), /didn't let you in|no hard feelings/i, 'guest sees the polite denial');
 });
+
+test('relay-client: the room secret rides hello; a missing one surfaces as refused', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey(), roomSecret: 'hunter2' });
+  t.after(() => relay.close());
+  const url = `ssh://127.0.0.1:${relay.port}`;
+
+  // Without the secret the relay answers REFUSED — the client surfaces it as an
+  // event (terminal verdict), never as a room.
+  const bare = connectRelay({ url, privateKey: newKey() });
+  t.after(() => bare.close());
+  await bare.ready;
+  const refusedP = once(bare.onRefused);
+  bare.hello();
+  assert.equal(await refusedP, 'secret', 'refusal reason surfaces to the caller');
+
+  // With opts.secret, hello() carries it automatically and the room is granted.
+  const cred = connectRelay({ url, privateKey: newKey(), secret: 'hunter2' });
+  t.after(() => cred.close());
+  await cred.ready;
+  const roomP = once(cred.onRoom);
+  cred.hello();
+  assert.match(await roomP, /^[a-z]+-[a-z]+$/, 'the credentialed client gets a room');
+});
+
+test('relay-client: verifyHostKey sees the relay fingerprint; false aborts the connection', async (t) => {
+  const relayKey = newKey();
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: relayKey });
+  t.after(() => relay.close());
+  const url = `ssh://127.0.0.1:${relay.port}`;
+
+  // The fingerprint the relay will present: SHA256 over its public key blob —
+  // the same derivation serve.js prints at boot for pinning.
+  const { createHash } = await import('node:crypto');
+  const pubBlob = parseKey(relayKey).getPublicSSH();
+  const expected = 'SHA256:' + createHash('sha256').update(pubBlob).digest('base64').replace(/=+$/, '');
+
+  // A verifier that likes what it sees: connection proceeds, fp matches.
+  let sawFp = null;
+  const ok = connectRelay({
+    url,
+    privateKey: newKey(),
+    verifyHostKey: (fp) => {
+      sawFp = fp;
+      return fp === expected;
+    },
+  });
+  t.after(() => ok.close());
+  await ok.ready;
+  assert.equal(sawFp, expected, 'the verifier is shown the relay key fingerprint');
+
+  // A verifier that refuses (pinned a different relay): the handshake aborts
+  // before any protocol bytes flow — ready rejects, no room is ever granted.
+  const veto = connectRelay({ url, privateKey: newKey(), verifyHostKey: () => false });
+  t.after(() => veto.close());
+  await assert.rejects(veto.ready, 'a refused host key must fail the connection');
+});
