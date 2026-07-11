@@ -65,6 +65,18 @@ test('buildWsPath: host tab carries host; a guest carries token+name', () => {
   assert.equal(hq.get('token'), null, 'the host token wins; no browser token is sent');
 });
 
+test('buildWsPath: a guest carries the room password; a host tab never does', () => {
+  const guest = buildWsPath({ code: 'brave-otter', name: 'sid', token: 'abc', pass: 'pw' });
+  const gq = new URLSearchParams(guest.slice(guest.indexOf('?') + 1));
+  assert.equal(gq.get('pass'), 'pw');
+
+  const open = buildWsPath({ code: 'brave-otter', name: 'sid', token: 'abc' });
+  assert.ok(!open.includes('pass='), 'open rooms send no password param at all');
+
+  const host = buildWsPath({ code: 'brave-otter', hostToken: 'H', pass: 'pw' });
+  assert.ok(!host.includes('pass='), 'the host tab is exempt from the room password');
+});
+
 test('b64encode: round-trips UTF-8 bytes (host decodes Buffer.from(data,"base64"))', () => {
   for (const s of ['K', '\r', '\x1b[D', 'héllo ✦', '', '\x1b[200~paste\x1b[201~']) {
     assert.equal(Buffer.from(b64encode(s), 'base64').toString('utf8'), s);

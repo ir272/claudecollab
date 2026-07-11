@@ -471,3 +471,30 @@ test('relay: roomSecret gates room creation; reclaim stays key-gated, not secret
   assert.equal(room2.t, TYPES.ROOM, 'reclaim needs no secret');
   assert.equal(room2.code, room.code);
 });
+
+test('relay: a passworded room challenges ssh guests before anything else', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  host.send({ t: TYPES.HELLO, want: 'room', pass: 'letmein' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // Wrong password: refusal + disconnect; the name prompt is never reached.
+  const eve = await connectGuest(relay.port, { code, privateKey: newKey() });
+  await eve.waitFor('room password:');
+  eve.type('nope\r');
+  await eve.waitFor('wrong password');
+  await eve.onClose();
+  assert.ok(!eve.getOut().includes('pick a name'), 'no name prompt without the password');
+
+  // Right password: the normal name → knock flow, with the secret never echoed.
+  const sid = await connectGuest(relay.port, { code, privateKey: newKey() });
+  await sid.waitFor('room password:');
+  sid.type('letmein\r');
+  await sid.waitFor('pick a name');
+  sid.type('sid\r');
+  const knock = await host.next((m) => m.t === TYPES.KNOCK);
+  assert.equal(knock.name, 'sid', 'the credentialed guest knocks normally');
+  assert.ok(!sid.getOut().includes('letmein'), 'the password echo is masked');
+});

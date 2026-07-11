@@ -53,6 +53,16 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
 2. Buy claudecollab.org (Ian's card, ~$11/yr) → `fly certs add claudecollab.org`,
    DNS records per fly's instructions, update PUBLIC_URL in fly.toml + redeploy
    (between sessions — restart ends live rooms; set ROOM_SECRET in the same restart)
+2a. Community relay (decided direction 2026-07-11): claudecollab.org doubles as the
+   free public relay so OSS users get "install → run → share a link" with zero
+   infra (the tmate/sshx/Syncthing model; terminal bytes are cheap, ~$7/mo until
+   real traction). A community relay runs WITHOUT ROOM_SECRET — protection is the
+   maxRooms lid + per-IP knock limits; the Rust CLI will default its --relay here.
+   Prereq feature — DONE 2026-07-11: **optional per-room join password**
+   (`--room-password`; HELLO `pass`; ssh masked prompt + web reveal-on-demand
+   field; wrong guesses burn tryKnock slots; host tab exempt; knock/admit stays
+   the final gate). Keep Ian's private secret-gated mode working from the same
+   code path.
 3. Relay hardening — DONE in code (HELLO room secret + relay-key pinning, 2026-07-11);
    what's left is ops: set ROOM_SECRET on Fly (see deployed state above)
 4. Rust single-binary CLI for `brew install`-style distribution — only if it doesn't

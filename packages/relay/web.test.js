@@ -298,3 +298,35 @@ test('web door: an unknown room code is refused politely', async (t) => {
   assert.equal(err.reason, 'no-room');
   await g.onClose();
 });
+
+test('web door: a passworded room pre-gates guests; the right password knocks; host tab exempt', async (t) => {
+  const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  host.send({ t: TYPES.HELLO, want: 'room', pass: 'letmein' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // No password → machine-readable refusal; the knock never reaches the host.
+  const bare = connectWeb(relay.webPort, `room=${code}&name=eve&token=t1`);
+  const err1 = await bare.nextText((m) => m.t === 'error');
+  assert.equal(err1.reason, 'password');
+  await bare.onClose();
+
+  // Wrong password → the same refusal (and another burned tryKnock slot).
+  const wrong = connectWeb(relay.webPort, `room=${code}&name=eve&token=t1&pass=nope`);
+  const err2 = await wrong.nextText((m) => m.t === 'error');
+  assert.equal(err2.reason, 'password');
+  await wrong.onClose();
+
+  // The right password → the knock reaches the host as usual.
+  connectWeb(relay.webPort, `room=${code}&name=sid&token=t2&pass=letmein`);
+  const knock = await host.next((m) => m.t === TYPES.KNOCK && m.name === 'sid');
+  assert.ok(knock.id, 'a credentialed guest knocks normally');
+
+  // Host tab: exempt — its credential is the host token the brain itself minted,
+  // and a forged one only lands as an ordinary knock the host will deny.
+  connectWeb(relay.webPort, `room=${code}&host=htok`);
+  const hostKnock = await host.next((m) => m.t === TYPES.KNOCK && m.fp === 'webhost:htok');
+  assert.ok(hostKnock.id, 'the host tab needs no room password');
+});

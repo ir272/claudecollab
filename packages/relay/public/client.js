@@ -55,15 +55,17 @@ export function parseLocation(loc) {
 
 /**
  * Build the `/ws` query the web door expects. A host tab carries `host`; a guest
- * carries its browser `token` (returning identity) and claimed `name`.
+ * carries its browser `token` (returning identity), claimed `name`, and — for a
+ * passworded room — the join password `pass` (host tabs never need one).
  * @returns {string} e.g. "/ws?room=brave-otter&name=sid&token=abc"
  */
-export function buildWsPath({ code, name, token, hostToken } = {}) {
+export function buildWsPath({ code, name, token, hostToken, pass } = {}) {
   const q = new URLSearchParams();
   if (code) q.set('room', code);
   if (name) q.set('name', name);
   if (hostToken) q.set('host', hostToken);
   else if (token) q.set('token', token);
+  if (pass && !hostToken) q.set('pass', pass);
   return '/ws?' + q.toString();
 }
 
@@ -355,6 +357,9 @@ export function overlayView(state, selfId) {
 function main() {
   const TOKEN_KEY = 'claude-share:token';
   const NAME_KEY = 'claude-share:name';
+  // Accepted room password, stored per room so a reload glides straight back in
+  // (same promise as the token). Cleared the moment the relay rejects it.
+  const passKey = (code) => 'claude-share:pass:' + code;
   const POINTER_HZ = 30; // send own pointer ≤ 30/s (spec)
   const POINTER_MS = Math.ceil(1000 / POINTER_HZ);
 
@@ -421,6 +426,8 @@ function main() {
   const roomLabel = $('#join-room');
   const codeInput = $('#code-input');
   const nameInput = $('#name-input');
+  const passField = $('#pass-field');
+  const passInput = $('#pass-input');
   const knockBtn = $('#knock-btn');
   const joinStatus = $('#join-status');
   const joinForm = $('#join-form');
@@ -484,7 +491,12 @@ function main() {
     timeout: 'The host did not answer in time. Try again when they are around.',
     denied: 'The host declined your request.',
     closed: 'The connection closed before you were let in — try again.',
+    // password gets its own copy in fail(): the message depends on whether we
+    // had one to send ("needs a password" vs "wrong password").
+    password: 'This room is password-protected.',
   };
+
+  let sentPass = null; // what the last attempt presented (drives the fail() copy)
 
   function beginKnock() {
     const code = (loc.code || codeInput.value || '').trim();
@@ -497,11 +509,17 @@ function main() {
       token = uuid();
       store.set(TOKEN_KEY, token);
     }
-    connect({ code, name, token, hostToken: loc.hostToken });
+    // A freshly typed password wins; otherwise reuse the one this room accepted
+    // before (reload glide-back). Open rooms send none and never see the field.
+    const typed = (passInput.value || '').trim();
+    const pass = typed || store.get(passKey(code)) || '';
+    sentPass = pass || null;
+    if (typed) store.set(passKey(code), typed);
+    connect({ code, name, token, hostToken: loc.hostToken, pass });
   }
 
   // ── connection ───────────────────────────────────────────────────────────────
-  function connect({ code, name, token, hostToken }) {
+  function connect({ code, name, token, hostToken, pass }) {
     // Supersede any previous socket COMPLETELY. A zombie from an earlier attempt
     // still has live handlers — when the brain dedupes its knock, its deny/close
     // would splash "declined" into a UI that belongs to the NEW attempt.
@@ -519,7 +537,7 @@ function main() {
       ? 'Opening your room…'
       : `Waiting for the host to let you in…`;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = proto + '//' + location.host + buildWsPath({ code, name, token, hostToken });
+    const url = proto + '//' + location.host + buildWsPath({ code, name, token, hostToken, pass });
     let sock;
     try {
       sock = new WebSocket(url);
@@ -593,6 +611,17 @@ function main() {
     if (loc.code) {
       roomLabel.hidden = false;
       codeInput.hidden = true;
+    }
+    if (reason === 'password') {
+      // Reveal the field (open rooms never see it) and forget a rejected value —
+      // a stale stored password must not silently retry forever.
+      const code = (loc.code || codeInput.value || '').trim();
+      if (code) store.set(passKey(code), '');
+      passField.hidden = false;
+      passInput.value = '';
+      setJoinStatus(sentPass ? 'Wrong password — try again.' : 'This room is password-protected.', true);
+      passInput.focus();
+      return;
     }
     setJoinStatus(ERRORS[reason] || 'Could not connect. Try again.', true);
   }

@@ -14,8 +14,9 @@
 
 import ssh2 from 'ssh2';
 import { readFileSync } from 'node:fs';
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createRegistry } from './rooms.js';
+import { secretsMatch } from './auth.js';
 import { startWebDoor } from './web.js';
 import { sanitizeName } from './names.js';
 import { TYPES, encode, validate, Decoder } from '../shared/protocol.js';
@@ -31,19 +32,12 @@ function fingerprint(keyData) {
   return 'SHA256:' + createHash('sha256').update(keyData).digest('base64').replace(/=+$/, '');
 }
 
-// Constant-time string comparison via digests (equal-length inputs for
-// timingSafeEqual, and no length leak from the secret itself).
-function secretsMatch(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const da = createHash('sha256').update(a).digest();
-  const db = createHash('sha256').update(b).digest();
-  return timingSafeEqual(da, db);
-}
-
 // Copy — kept plain and friendly (spec frames). CRLF for raw terminals.
 const COPY = {
   connecting: (host, code) => `connecting to ${host}'s room ${code}…\r\n`,
   namePrompt: 'pick a name: ',
+  passPrompt: 'room password: ',
+  badPass: '\r\nwrong password. \u{1F44B}\r\n',
   knocking: '\u{1F6AA} knocking…\r\n',
   denied: "\r\nthe host didn't let you in this time. no hard feelings \u{1F44B}\r\n",
   timeout: "\r\nno answer — the host isn't available right now. try again later \u{1F44B}\r\n",
@@ -220,6 +214,11 @@ export function startRelay(opts = {}) {
             hostStream: stream,
             hostPresent: true,
             hostFp, // gates reclaim: only this key may take the room back
+            // Optional join password (set by the host in HELLO). Both doors
+            // pre-gate every guest against it BEFORE the knock reaches the host;
+            // knock/admit stays the final gate behind it. Survives reclaim (the
+            // room object persists across a host drop).
+            pass: typeof msg.pass === 'string' && msg.pass.length ? msg.pass : null,
             guests: new Map(),
             pending: new Map(),
             seen: new Map(),
@@ -405,8 +404,9 @@ export function startRelay(opts = {}) {
       stream,
       fp,
       name: null,
-      phase: 'name',
+      phase: room.pass ? 'pass' : 'name',
       nameBuf: '',
+      passBuf: '',
       cols: ptyInfo?.cols ?? 80, // spec floor; refined by window-change
       rows: ptyInfo?.rows ?? 24,
       knockTimer: null,
@@ -415,17 +415,17 @@ export function startRelay(opts = {}) {
     };
     room.pending.set(rec.id, rec);
 
-    // A known key skips the name prompt and carries its prior name in `seen`.
-    const priorName = fp ? room.seen.get(fp) : undefined;
-    if (priorName !== undefined) {
-      rec.name = priorName;
-      sendKnock(room, rec, priorName); // seen = the prior name
+    // A passworded room challenges EVERY guest first — known keys included (a
+    // remembered name is a convenience, not a credential). Open rooms flow as before.
+    if (room.pass) {
+      safeWrite(stream, COPY.passPrompt);
     } else {
-      safeWrite(stream, COPY.namePrompt);
+      afterPass(room, rec);
     }
 
     stream.on('data', (chunk) => {
-      if (rec.phase === 'name') feedName(room, rec, chunk);
+      if (rec.phase === 'pass') feedPass(room, rec, chunk);
+      else if (rec.phase === 'name') feedName(room, rec, chunk);
       else if (rec.phase === 'live') safeWrite(room.hostStream, encode({ t: TYPES.KEY, id: rec.id, data: chunk.toString('base64') }));
       // 'knocking': input ignored until admitted
     });
@@ -433,6 +433,49 @@ export function startRelay(opts = {}) {
     const gone = () => onGuestGone(rec);
     stream.on('close', gone);
     conn.on('close', gone);
+  }
+
+  // The post-password continuation: a known key skips the name prompt and
+  // carries its prior name in `seen`; everyone else picks a name.
+  function afterPass(room, rec) {
+    const priorName = rec.fp ? room.seen.get(rec.fp) : undefined;
+    if (priorName !== undefined) {
+      rec.name = priorName;
+      sendKnock(room, rec, priorName); // seen = the prior name
+    } else {
+      rec.phase = 'name';
+      safeWrite(rec.stream, COPY.namePrompt);
+    }
+  }
+
+  // Line editor for the password prompt: masked echo, backspace, Enter. A wrong
+  // guess ends the connection — retrying costs a fresh connection, and each one
+  // burns a tryKnock slot, so brute force hits the per-ip lockout fast.
+  function feedPass(room, rec, chunk) {
+    for (const byte of chunk) {
+      if (byte === 0x0d || byte === 0x0a) {
+        if (secretsMatch(rec.passBuf, room.pass)) {
+          rec.passBuf = '';
+          safeWrite(rec.stream, '\r\n');
+          afterPass(room, rec);
+        } else {
+          safeWrite(rec.stream, COPY.badPass);
+          endGuest(rec);
+        }
+        return;
+      }
+      if (byte === 0x7f || byte === 0x08) {
+        if (rec.passBuf.length) {
+          rec.passBuf = rec.passBuf.slice(0, -1);
+          safeWrite(rec.stream, '\b \b');
+        }
+        continue;
+      }
+      if (byte >= 0x20 && byte < 0x7f) {
+        rec.passBuf += String.fromCharCode(byte);
+        safeWrite(rec.stream, '•'); // masked echo (raw pty, no local echo)
+      }
+    }
   }
 
   // Minimal line editor for the name prompt (echo, backspace, Enter).

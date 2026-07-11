@@ -14,9 +14,9 @@
 # If `fly launch` picks a different app name, update PUBLIC_URL below to match
 # (it must be the real public origin — it's what invite links print).
 #
-# Custom domain later:
-#   fly certs add claudeshare.dev   # then point DNS (CNAME → this app) as instructed
-#   ...and update PUBLIC_URL to https://claudeshare.dev
+# Custom domain (done 2026-07-11): certs added for claudecollab.org + www,
+# apex A/AAAA point at the dedicated IPs, PUBLIC_URL below carries the domain.
+# The ssh door rides the same A record: --relay ssh://claudecollab.org:2222.
 #
 # Ops notes (learned the hard way):
 #   • MUST stay at exactly ONE machine (`fly scale count 1`): rooms live in the
@@ -35,7 +35,7 @@ primary_region = "dfw"
 [env]
   WEB_PORT = "8080"
   SSH_PORT = "2222"
-  PUBLIC_URL = "https://claudeshare.fly.dev"
+  PUBLIC_URL = "https://claudecollab.org"
 
 # Browser door: TLS terminates at Fly's edge, plain http+ws reaches the relay.
 [[services]]

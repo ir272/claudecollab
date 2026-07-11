@@ -67,6 +67,9 @@ export function openingMove(heldRoom) {
  * @param {number} [opts.keepaliveInterval]  ssh keepalive ms (default 20s)
  * @param {string} [opts.secret]             room-creation credential; rides every hello()
  *                                            (a relay with ROOM_SECRET set requires it)
+ * @param {string} [opts.roomPass]           optional join password for the room this host
+ *                                            creates — the relay challenges every guest
+ *                                            with it before their knock is delivered
  * @param {(fp:string)=>boolean} [opts.verifyHostKey]  called with the relay's SHA256:…
  *                                            key fingerprint during the handshake; return
  *                                            false to abort (impersonation defense).
@@ -81,7 +84,7 @@ export function openingMove(heldRoom) {
  * }}
  */
 export function connectRelay(opts = {}) {
-  const { url, keepaliveInterval = 20000, secret, verifyHostKey } = opts;
+  const { url, keepaliveInterval = 20000, secret, roomPass, verifyHostKey } = opts;
   const { host, port } = parseRelayUrl(url);
   // A stable key lets the host reclaim its room after a drop; if the caller has
   // none we still connect (relay rejects `none` auth) with a throwaway key —
@@ -240,7 +243,7 @@ export function connectRelay(opts = {}) {
     onClose: on(sets.close), // ()                         the control channel closed
     onError: on(sets.error), // (err)                      ssh transport error
 
-    hello: () => send({ t: TYPES.HELLO, want: 'room', ...(secret ? { secret } : {}) }),
+    hello: () => send({ t: TYPES.HELLO, want: 'room', ...(secret ? { secret } : {}), ...(roomPass ? { pass: roomPass } : {}) }),
     reclaim: (code) => send({ t: TYPES.RECLAIM, code }),
     admit: (id) => send({ t: TYPES.ADMIT, id }),
     deny: (id) => send({ t: TYPES.DENY, id }),

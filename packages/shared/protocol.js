@@ -4,7 +4,8 @@
 
 /** Canonical message-type strings (the `t` field of every message). */
 export const TYPES = Object.freeze({
-  HELLO: 'hello', // host->relay: {t:'hello', want:'room', secret?} — new room (secret when the relay requires one)
+  HELLO: 'hello', // host->relay: {t:'hello', want:'room', secret?, pass?} — new room (secret = relay
+  //   room-creation credential; pass = optional per-room JOIN password guests must present)
   RECLAIM: 'reclaim', // host->relay: {t:'reclaim', code}           — take back an existing room after a drop
   ROOM: 'room', // relay->host: {t:'room', code}                    — room granted (create OR reclaim)
   GONE: 'gone', // relay->host: {t:'gone', code}                    — reclaim refused (expired / wrong key)
@@ -134,7 +135,13 @@ export function validate(obj) {
     case TYPES.HELLO:
       // secret (optional): the relay-wide room-creation credential. Compared on
       // the relay when configured; a plain relay ignores it.
-      return obj.want === 'room' && (obj.secret === undefined || isStr(obj.secret));
+      // pass (optional): a join password for THIS room — the relay stores it and
+      // pre-gates every guest (ssh prompt / web form) before the knock is sent.
+      return (
+        obj.want === 'room' &&
+        (obj.secret === undefined || isStr(obj.secret)) &&
+        (obj.pass === undefined || isStr(obj.pass))
+      );
     case TYPES.REFUSED:
       return isStr(obj.reason);
     case TYPES.ROOM:

@@ -56,6 +56,7 @@ function parseArgs(argv) {
     // Env beats a flag for real use (a flag shows in `ps`); the flag wins if both.
     secret: process.env.CLAUDE_SHARE_SECRET || undefined,
     fingerprint: undefined, // explicit relay key pin (SHA256:…); default is TOFU
+    roomPassword: undefined, // optional join password guests must present before knocking
     childArgs: [],
   };
   const passthrough = [];
@@ -69,6 +70,7 @@ function parseArgs(argv) {
     else if (a === '--guests') opts.guests = argv[++i] ?? opts.guests;
     else if (a === '--secret') opts.secret = argv[++i] ?? opts.secret;
     else if (a === '--fingerprint') opts.fingerprint = argv[++i] ?? opts.fingerprint;
+    else if (a === '--room-password') opts.roomPassword = argv[++i] ?? opts.roomPassword;
     else if (a === '--') {
       passthrough.push(...argv.slice(i + 1));
       break;
@@ -1110,6 +1112,7 @@ async function main() {
         url: opts.relayUrl,
         privateKey: loadHostKey(),
         secret: opts.secret,
+        roomPass: opts.roomPassword,
         verifyHostKey: pin ? pin.verify : undefined,
       });
     } catch (err) {

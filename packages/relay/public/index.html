@@ -25,6 +25,11 @@
             <span class="field-label">Your name</span>
             <input id="name-input" class="text-input" type="text" maxlength="24" placeholder="e.g. sid" />
           </label>
+          <!-- revealed only after the relay answers 'password' — open rooms never see it -->
+          <label id="pass-field" class="field" hidden>
+            <span class="field-label">Room password</span>
+            <input id="pass-input" class="text-input" type="password" maxlength="64" autocomplete="off" />
+          </label>
           <button id="knock-btn" class="btn primary block" type="submit">Request to join</button>
           <p id="join-status" class="join-status"></p>
         </form>

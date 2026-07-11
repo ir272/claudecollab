@@ -58,6 +58,10 @@ Two protections kick in on a deployed relay:
 
 The Invite button and your clipboard always hold the safe one.
 
+Want a lock in front of the knock? Host with `--room-password <pw>` — guests must
+enter it (browser field / ssh prompt) before their request ever reaches you.
+Admitting stays your call either way.
+
 ## Roles
 
 | Role | See | Type · answer asks · slash/bash | Admit · kick · pause · end |

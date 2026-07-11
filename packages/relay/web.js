@@ -33,6 +33,7 @@ import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { TYPES, encode, validate } from '../shared/protocol.js';
 import { sanitizeName } from './names.js';
+import { secretsMatch } from './auth.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(here, 'public');
@@ -218,6 +219,14 @@ export function startWebDoor(ctx) {
     if (!room.hostPresent) return void (sendErr(ws, 'host-gone'), wsClose(ws));
     if (fp && registry.get(code).banned.has(fp)) return void (sendErr(ws, 'banned'), wsClose(ws));
     if (!registry.tryKnock(code, ip)) return void (sendErr(ws, 'lockout'), wsClose(ws));
+    // Room password pre-gate (mirrors the ssh door's prompt). Host tabs are
+    // exempt: their credential is the host token the brain itself minted — and a
+    // forged `?host=` gains nothing, it just lands as an ordinary pending knock
+    // the host will see and deny. Wrong guesses already burned a tryKnock slot
+    // above, so brute force hits the per-ip lockout fast.
+    if (!isHostTab && room.pass && !secretsMatch(q.get('pass') ?? '', room.pass)) {
+      return void (sendErr(ws, 'password'), wsClose(ws));
+    }
 
     const rec = {
       id: randomUUID(),
