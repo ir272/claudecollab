@@ -1,14 +1,31 @@
 {
-  "name": "claude-share",
-  "version": "0.0.0",
+  "name": "claudecollab",
+  "version": "0.1.0",
   "license": "MIT",
-  "private": true,
+  "description": "Make your Claude Code session multiplayer — friends join from a browser link, no install: live cursors, shared drafts, a visible queue, roles.",
+  "homepage": "https://claudecollab.org",
   "type": "module",
+  "bin": {
+    "collab": "packages/cli/bin/claude-share.js",
+    "collab-relay": "packages/relay/bin/serve.js"
+  },
+  "files": [
+    "packages/cli",
+    "packages/relay",
+    "packages/shared",
+    "!**/*.test.js"
+  ],
   "workspaces": [
     "packages/*"
   ],
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "node-pty": "^1.1.0",
+    "ssh2": "^1.17.0",
+    "ws": "^8.18.0"
   },
   "scripts": {
     "test": "node --test \"packages/**/*.test.js\" \"test/**/*.test.js\""

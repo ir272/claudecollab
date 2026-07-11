@@ -47,7 +47,9 @@ import { foldKnock } from '../src/brain/knocks.js';
 function parseArgs(argv) {
   const opts = {
     relay: true,
-    relayUrl: 'ssh://127.0.0.1:2222', // dev default; override with --relay <url>
+    // Default to the community relay so a fresh `collab` needs zero setup; dev
+    // rigs and tests always pass --relay explicitly (ssh://127.0.0.1:2222).
+    relayUrl: 'ssh://claudecollab.org:2222',
     webPort: 8787, // the relay's browser-door port — the CLI prints it in the room URL
     cmd: 'claude',
     hooks: true,
@@ -190,7 +192,7 @@ async function main() {
   } catch (err) {
     process.stderr.write(
       `claude-share: could not start "${opts.cmd}": ${err.message}\n` +
-        'If this is a native-module error, run `npm install` in packages/cli (needs node-pty).\n',
+        'If this is a native-module error, run `npm rebuild node-pty` where this package is installed.\n',
     );
     process.exit(1);
   }

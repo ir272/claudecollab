@@ -66,15 +66,16 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
    code path.
 3. DONE 2026-07-11 (code + ops): relay hardening — HELLO room secret + relay-key
    pinning shipped; ROOM_SECRET live on Fly
-4. Rust single-binary CLI for `brew install`-style distribution — IN PROGRESS
-   2026-07-11. Decisions: relay first (protocol tests = spec), user-facing binary
-   named **collab** (skin-deep-brand rule), crates brand-neutral. Done: `rust/`
-   cargo workspace + `collab-protocol` crate (encode/Decoder/validate mirroring
-   packages/shared/protocol.js, fixtures ported from its tests, 7 tests green).
-   Next: relay crate (russh server + registry + doors), run the JS relay tests
-   against it; then the CLI (pty/ssh/hooks/brain — the heavy half). OPEN DECISION
-   (Ian): CLI v1 scope — minimal-but-real (pty+relay+band+knock/admit/roles;
-   drafts+queue deferred to v2) vs full parity before release
+4. Rust port — PARKED 2026-07-11 (Ian: "isn't necessary at all"). The audience
+   runs Claude Code, an npm package — they have Node by definition, so npm IS the
+   native install channel and the single-binary thesis dissolved. The `rust/`
+   workspace + `collab-protocol` crate (spec-port of protocol.js, 7 tests green)
+   stays in-repo as the restart point. Revisit only on a concrete trigger:
+   real non-Node demand, relay scale pain, or a brew-distribution moment.
+4a. LAUNCH PATH (active): npm packaging (publish the Node CLI, command `collab`,
+   default relay claudecollab.org) → landing page at / → README-for-strangers →
+   open the community relay (drop ROOM_SECRET; maxRooms + lockouts + room
+   passwords are the abuse lids) → repo public
 5. Agent door: expose the guest protocol as a machine interface (MCP server —
    join_room / read_screen / wait_for_idle / send_prompt / answer_ask) so an
    EXTERNAL agent can supervise a session as an outer loop: independent judge
