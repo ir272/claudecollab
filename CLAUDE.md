@@ -66,9 +66,15 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
    code path.
 3. DONE 2026-07-11 (code + ops): relay hardening — HELLO room secret + relay-key
    pinning shipped; ROOM_SECRET live on Fly
-4. Rust single-binary CLI for `brew install`-style distribution — only if it doesn't
-   force an architecture change; port the relay first (protocol tests = spec), the CLI
-   port (pty/ssh/hooks/brain) is the heavy half
+4. Rust single-binary CLI for `brew install`-style distribution — IN PROGRESS
+   2026-07-11. Decisions: relay first (protocol tests = spec), user-facing binary
+   named **collab** (skin-deep-brand rule), crates brand-neutral. Done: `rust/`
+   cargo workspace + `collab-protocol` crate (encode/Decoder/validate mirroring
+   packages/shared/protocol.js, fixtures ported from its tests, 7 tests green).
+   Next: relay crate (russh server + registry + doors), run the JS relay tests
+   against it; then the CLI (pty/ssh/hooks/brain — the heavy half). OPEN DECISION
+   (Ian): CLI v1 scope — minimal-but-real (pty+relay+band+knock/admit/roles;
+   drafts+queue deferred to v2) vs full parity before release
 5. Agent door: expose the guest protocol as a machine interface (MCP server —
    join_room / read_screen / wait_for_idle / send_prompt / answer_ask) so an
    EXTERNAL agent can supervise a session as an outer loop: independent judge

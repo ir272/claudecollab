@@ -1,0 +1,9 @@
+[package]
+name = "collab-protocol"
+description = "Wire protocol for the host<->relay control channel: JSON lines, streaming decoder, shallow validation. Mirrors packages/shared/protocol.js (the JS tests are the spec)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = "1"

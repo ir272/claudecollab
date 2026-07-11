@@ -1,0 +1,12 @@
+# Rust port workspace (backlog #4). Port order: protocol crate → relay → CLI.
+# Crate names stay brand-neutral (CLAUDE.md skin-deep-brand rule); the user-facing
+# binary will be `collab`. The JS implementation remains the reference; the JS
+# protocol tests are the wire spec these crates must match.
+[workspace]
+members = ["crates/protocol"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
