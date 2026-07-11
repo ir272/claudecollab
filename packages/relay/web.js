@@ -62,9 +62,9 @@ const contentType = (p) => CONTENT_TYPES[path.extname(p).toLowerCase()] ?? 'appl
 
 // Served when public/index.html doesn't exist yet (T3 owns the real client).
 const FALLBACK_INDEX =
-  '<!doctype html><meta charset="utf-8"><title>claude-share</title>' +
+  '<!doctype html><meta charset="utf-8"><title>claudecollab</title>' +
   '<body style="font:16px system-ui;margin:3rem;max-width:40rem">' +
-  '<h1>claude-share</h1><p>the web client is not built yet.</p></body>';
+  '<h1>claudecollab</h1><p>the web client is not built yet.</p></body>';
 
 function isObj(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);

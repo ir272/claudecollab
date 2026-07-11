@@ -87,7 +87,7 @@ test('statusLine pluralizes the people count', () => {
 
 test('statusLine falls back to a solo label with no room and drops a missing URL', () => {
   const line = statusLine({ people: 1, claudeState: 'solo' }, 80);
-  assert.match(stripAnsi(line), /^─ claude-share · 1 person · solo ─$/);
+  assert.match(stripAnsi(line), /^─ claudecollab · 1 person · solo ─$/);
   assert.doesNotMatch(stripAnsi(line), /http/);
 });
 

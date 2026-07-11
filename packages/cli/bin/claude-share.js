@@ -181,7 +181,7 @@ async function main() {
       await hooks.ready;
       childArgs.unshift('--settings', settingsFile);
     } catch (err) {
-      process.stderr.write(`claude-share: hook setup failed (${err.message}); state detection off\n`);
+      process.stderr.write(`collab: hook setup failed (${err.message}); state detection off\n`);
       hooks = null;
     }
   }
@@ -191,7 +191,7 @@ async function main() {
     pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: BAND_ROWS });
   } catch (err) {
     process.stderr.write(
-      `claude-share: could not start "${opts.cmd}": ${err.message}\n` +
+      `collab: could not start "${opts.cmd}": ${err.message}\n` +
         'If this is a native-module error, run `npm rebuild node-pty` where this package is installed.\n',
     );
     process.exit(1);
@@ -1119,7 +1119,7 @@ async function main() {
       });
     } catch (err) {
       if (state.room) return scheduleReconnect();
-      process.stderr.write(`claude-share: relay setup failed (${err.message}); running solo\n`);
+      process.stderr.write(`collab: relay setup failed (${err.message}); running solo\n`);
       return;
     }
     relay = r;
@@ -1138,16 +1138,16 @@ async function main() {
           // relay — refuse loudly either way and never auto-retry.
           relayVetoed = true;
           process.stderr.write(
-            `claude-share: RELAY IDENTITY CHANGED — refusing to connect.\n` +
-              `claude-share: pinned ${pin.expected()}, but ${RELAY_HOST}:${RELAY_PORT} presented ${pin.seen()}.\n` +
-              `claude-share: if the relay key was rotated on purpose, delete the "${RELAY_HOST}:${RELAY_PORT}"\n` +
-              `claude-share: entry in ${PIN_FILE} and restart. otherwise DO NOT connect.\n`
+            `collab: RELAY IDENTITY CHANGED — refusing to connect.\n` +
+              `collab: pinned ${pin.expected()}, but ${RELAY_HOST}:${RELAY_PORT} presented ${pin.seen()}.\n` +
+              `collab: if the relay key was rotated on purpose, delete the "${RELAY_HOST}:${RELAY_PORT}"\n` +
+              `collab: entry in ${PIN_FILE} and restart. otherwise DO NOT connect.\n`
           );
           showToast('relay identity changed — refusing to connect (details in terminal). running solo', 15000);
           return;
         }
         if (state.room) scheduleReconnect(); // lost a held room — keep trying within TTL
-        else process.stderr.write(`claude-share: relay unavailable (${err.message}); running solo\n`);
+        else process.stderr.write(`collab: relay unavailable (${err.message}); running solo\n`);
       });
   }
 
@@ -1314,6 +1314,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  process.stderr.write(`claude-share: ${err?.stack || err}\n`);
+  process.stderr.write(`collab: ${err?.stack || err}\n`);
   process.exit(1);
 });

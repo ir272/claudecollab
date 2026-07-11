@@ -143,7 +143,7 @@ const FRAME_R = ' ─';
  * trims the URL, where the never-wrap-into-Claude invariant has to win.
  *
  * @param {object} state
- * @param {string|null} [state.room]        room code (null ⇒ "claude-share")
+ * @param {string|null} [state.room]        room code (null ⇒ "claudecollab")
  * @param {number} [state.people]           participant count
  * @param {string} [state.claudeState]      Claude's state / a folded-in toast
  * @param {string|null} [state.url]         the room URL to print (null when solo)
@@ -151,7 +151,7 @@ const FRAME_R = ' ─';
  * @returns {string} colored, width-clamped line
  */
 export function statusLine(state = {}, width = 80) {
-  const room = state.room || 'claude-share';
+  const room = state.room || 'claudecollab';
   const url = state.url ? String(state.url) : null;
   const n = state.people;
   const people = Number.isFinite(n) ? `${n} ${n === 1 ? 'person' : 'people'}` : null;

@@ -31,7 +31,7 @@ if (process.argv.includes('--make-key')) {
 const webPort = Number(process.env.WEB_PORT || 8787);
 const sshPort = Number(process.env.SSH_PORT || 2222);
 const publicUrl = process.env.PUBLIC_URL || undefined;
-const hostName = process.env.HOST_NAME || 'claude-share';
+const hostName = process.env.HOST_NAME || 'claudecollab';
 
 let hostKey = process.env.HOST_KEY;
 if (!hostKey) {
