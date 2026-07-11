@@ -38,15 +38,34 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
 
 ## Backlog (parked, in priority order)
 
-1. Anthropic ToS/branding check before any public release (repo stays PRIVATE until done;
-   "claude" in a public domain name touches their trademark)
-2. Buy real domain (`claudeshare.dev`/`.sh`/`.app`; `.re` has EU-residency friction) →
-   `fly certs add`, DNS records, update PUBLIC_URL in fly.toml
+1. Rename + ToS check before any public release (repo stays PRIVATE until done).
+   Researched 2026-07-11: CLAUDE is a registered mark (USPTO #7645254) and Anthropic
+   enforces even phonetic near-misses (Clawdbot→Moltbot→OpenClaw, Jan 2026), so NO
+   "claude" in the name/domain — claudecollab.co rejected on these grounds. Tagline
+   may say "multiplayer for Claude Code" (nominative use); the brand may not.
+   Candidates: partyline, coterm, co-op/coop, mob*, backseat, seance. Also keep
+   marketing framed as "collaborate on a live session" — never "share your Claude
+   subscription" (consumer-terms account-sharing gray zone).
+2. Buy real domain (blocked on #1's name pick) → `fly certs add`, DNS records,
+   update PUBLIC_URL in fly.toml
 3. Relay hardening — DONE in code (HELLO room secret + relay-key pinning, 2026-07-11);
    what's left is ops: set ROOM_SECRET on Fly (see deployed state above)
 4. Rust single-binary CLI for `brew install`-style distribution — only if it doesn't
    force an architecture change; port the relay first (protocol tests = spec), the CLI
    port (pty/ssh/hooks/brain) is the heavy half
+5. Agent door: expose the guest protocol as a machine interface (MCP server —
+   join_room / read_screen / wait_for_idle / send_prompt / answer_ask) so an
+   EXTERNAL agent can supervise a session as an outer loop: independent judge
+   holding the goal, re-prompting on idle until machine-checkable done-criteria
+   pass (tests green, spec ticked), able to /clear or re-anchor a rotted session
+   from outside. Agents join like any guest (knock/admit, prompter at most, never
+   host; pause/kick apply) and browsers stay the human-watching surface — agents
+   speak the protocol, not screenshots. MUST be explicit host opt-in and framed/
+   defaulted as supervision, not unattended automation: continuous agent-driven
+   prompting on a Pro/Max-billed session is the OpenClaw pattern Anthropic banned
+   (Apr 2026) — steer this mode toward API-key billing. Free spin-off already true
+   today, just needs saying on the landing page: solo remote access (open your own
+   room from your phone, answer asks from anywhere).
 
 ## Machine-local cleanup owed (Ian's old Mac)
 
