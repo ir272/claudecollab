@@ -404,6 +404,18 @@ function main() {
       return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
     });
 
+  // The per-browser host-seat secret: minted once, reused forever (so reloads keep
+  // the seat). Both host-tab entry points — the auto-connect on load and beginKnock
+  // — must send it, or the CLI (which requires a seat to grant host) refuses.
+  const mintSeat = () => {
+    let s = store.get(SEAT_KEY);
+    if (!s) {
+      s = uuid();
+      store.set(SEAT_KEY, s);
+    }
+    return s;
+  };
+
   // ── app state ───────────────────────────────────────────────────────────────
   const loc = parseLocation(window.location);
   let ws = null;
@@ -526,14 +538,7 @@ function main() {
     sentPass = pass || null;
     if (typed) store.set(passKey(code), typed);
     // Host tabs carry the per-browser seat secret (minted once, kept locally).
-    let seat = null;
-    if (loc.hostToken) {
-      seat = store.get(SEAT_KEY);
-      if (!seat) {
-        seat = uuid();
-        store.set(SEAT_KEY, seat);
-      }
-    }
+    const seat = loc.hostToken ? mintSeat() : null;
     connect({ code, name, token, hostToken: loc.hostToken, pass, seat });
   }
 
@@ -1553,7 +1558,7 @@ function main() {
     // Host tab: no name prompt — connect straight to its own room (name comes from
     // the shared state once live).
     joinScreen.hidden = false;
-    connect({ code: loc.code, name: '', token: null, hostToken: loc.hostToken });
+    connect({ code: loc.code, name: '', token: null, hostToken: loc.hostToken, seat: mintSeat() });
     joinForm.hidden = true;
     waiting.hidden = false;
   } else {
