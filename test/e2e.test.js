@@ -130,14 +130,16 @@ function connectGuest(port, { code, privateKey, keyboard } = {}) {
 // auto-admits it as host. Screen bytes arrive as binary frames (ignored here); the
 // overlay {t:'state'} and the {t:'joined'} cue arrive as text frames. It mails back
 // the exact {t:'ui'} admit/deny/command messages the real browser client sends.
-function connectHostTab(webPort, { code, token }) {
+function connectHostTab(webPort, { code, token, seat = 'hostseat' }) {
   const states = [];
   const waiters = [];
   const joinWaiters = [];
+  const errWaiters = [];
   let selfId = null;
   let joined = false;
+  let errored = null;
 
-  const ws = new WebSocket(`ws://127.0.0.1:${webPort}/ws?room=${code}&host=${token}`);
+  const ws = new WebSocket(`ws://127.0.0.1:${webPort}/ws?room=${code}&host=${token}&seat=${seat}`);
 
   const pushState = (data) => {
     states.push(data);
@@ -163,6 +165,9 @@ function connectHostTab(webPort, { code, token }) {
       joinWaiters.splice(0).forEach((r) => r());
     } else if (msg.t === 'state') {
       pushState(msg.data);
+    } else if (msg.t === 'error') {
+      errored = msg;
+      errWaiters.splice(0).forEach((r) => r(msg));
     }
   });
 
@@ -180,6 +185,16 @@ function connectHostTab(webPort, { code, token }) {
             joinWaiters.push(() => {
               clearTimeout(timer);
               resolve();
+            });
+          }),
+    onError: (ms = DEFAULT_TIMEOUT) =>
+      errored
+        ? Promise.resolve(errored)
+        : new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('host tab: expected a refusal, got none')), ms);
+            errWaiters.push((m) => {
+              clearTimeout(timer);
+              resolve(m);
             });
           }),
     admit: (id) => send({ t: 'ui', action: { kind: 'admit', id } }),
@@ -295,6 +310,16 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   // never a second "host (you)" beside it (finding 4).
   assert.equal(s0.participants.filter((p) => p.role === 'host').length, 1, 'exactly one host entry');
   assert.equal(s0.participants.length, 1, 'the host tab does not add a second participant (findings 3, 4)');
+
+  // ── leaked-link defense: a second browser opening the SAME host link with a
+  // different seat secret is refused the host seat (it holds the token but not the
+  // bound seat). The real host bound the seat first; the impostor never joins. ──
+  const impostor = await connectHostTab(webPort, { code, token, seat: 'stolen-link-seat' });
+  t.after(() => impostor.close());
+  const refused = await impostor.onError(15000);
+  assert.equal(refused.reason, 'denied', 'a mismatched-seat host-link opener is refused host access');
+  const sGuard = await hostTab.waitForState((s) => s.room === code);
+  assert.equal(sGuard.participants.filter((p) => p.role === 'host').length, 1, 'no second host slipped in via a stolen link');
 
   // ── guest A: named key, knocks → the host tab admits from the browser ───────
   const a = await connectGuest(port, { code, privateKey: newKey() });

@@ -206,7 +206,14 @@ export function startWebDoor(ctx) {
     const isHostTab = !!hostToken;
     // Identity: the host tab carries the host token; a guest carries its browser
     // token (session-only if absent). The relay makes no trust call — the brain does.
-    const fp = isHostTab ? 'webhost:' + hostToken : 'web:' + (q.get('token') || randomUUID());
+    // Host tabs carry a per-browser seat secret; fold it into the synthetic host
+    // fingerprint (`webhost:<token>:<seat>`) so the CLI can bind the host seat to
+    // the first browser it sees. Sanitize to a safe charset — it lands in the fp
+    // the CLI parses. The relay makes no trust call; the brain owns the binding.
+    const seat = (q.get('seat') || '').replace(/[^A-Za-z0-9._-]/g, '').slice(0, 64);
+    const fp = isHostTab
+      ? 'webhost:' + hostToken + (seat ? ':' + seat : '')
+      : 'web:' + (q.get('token') || randomUUID());
     // Printable-ASCII only, same as the ssh door: `?name=` is an untrusted URL param,
     // and the host writes it verbatim to its terminal / log / session.md and mirrors
     // it to every ssh guest — raw ESC/OSC/BEL bytes here would be escape injection.

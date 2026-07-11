@@ -119,9 +119,38 @@ async function main() {
   const BAND_ROWS = 1;
   const multiplayer = opts.relay; // the guest composer/gate + mirror are active only when sharing
   // The host's browser tab authenticates with this token: it knocks with fingerprint
-  // `webhost:<token>`, and the brain auto-admits it as host (the one knock answered
-  // with no host already present). The token also goes in the room URL we print/copy.
+  // `webhost:<token>:<seat>`, and the brain auto-admits it as host. The token goes in
+  // the room URL we print/copy; the SEAT does not — the browser mints it locally, so
+  // possessing the (leak-prone) URL is not enough to take the host seat.
   const hostToken = randomBytes(16).toString('hex');
+  const HOST_FP_PREFIX = `webhost:${hostToken}`;
+  // The seat this session is bound to: the first host browser's seat secret claims
+  // it; later browsers presenting the token with a different/absent seat are refused
+  // (leaked-link defense). Reset by a host-terminal Ctrl-G handoff (see below).
+  let boundSeat = null;
+  // Parse a knock fingerprint: null ⇒ not a host tab; '' ⇒ host token but NO seat
+  // (a raw link opened without our client, or a forgery) ⇒ refused; else the seat.
+  const hostSeatOf = (fp) => {
+    if (typeof fp !== 'string' || !fp.startsWith(HOST_FP_PREFIX)) return null;
+    const rest = fp.slice(HOST_FP_PREFIX.length);
+    return rest.startsWith(':') ? rest.slice(1) : '';
+  };
+  // Is this fingerprint the bound host tab (or the first to claim the empty seat)?
+  const isBoundHost = (fp) => {
+    const seat = hostSeatOf(fp);
+    return seat !== null && seat !== '' && seat === boundSeat;
+  };
+  // Handoff window: after a mismatched host attempt is refused, pressing Ctrl-G in
+  // the host TERMINAL (which no remote participant can reach) releases the seat so
+  // the next device claims it. Armed briefly and only then; zero interception else.
+  let handoffTimer = null;
+  const armHandoff = () => {
+    clearTimeout(handoffTimer);
+    handoffTimer = setTimeout(() => {
+      handoffTimer = null;
+    }, 60_000);
+    handoffTimer.unref?.();
+  };
   // The current live Claude screen, cached so a joiner sees it instantly (finding 1).
   const snapshot = new ScreenSnapshot();
 
@@ -781,7 +810,7 @@ async function main() {
     r.admit(knock.id);
     // The host's own tab IS the host, not a room member (finding 4): no roster entry,
     // no context card. It still mirrors the live screen, so it does get the snapshot.
-    if (knock.fp === `webhost:${hostToken}`) {
+    if (isBoundHost(knock.fp)) {
       hostTabIds.add(knock.id);
       knockInfo.set(knock.id, { name: knock.name, fp: knock.fp, role: 'host' });
       if (!state.paused) {
@@ -1015,11 +1044,26 @@ async function main() {
       repaintBand();
     });
     r.onKnock((knock) => {
-      // The host's own browser tab knocks with fp `webhost:<token>`. Auto-admit it as
-      // host — it is the one knock answered with no explicit ui action, and it is how
-      // the host gets in to answer everyone else's knocks. It is never a pending knock.
-      if (knock.fp === `webhost:${hostToken}`) {
-        admitAndCatchUp(r, knock);
+      // The host's own browser tab knocks with fp `webhost:<token>:<seat>`. The seat
+      // binds the host seat to the FIRST browser to present one; later browsers with
+      // the token but a different/absent seat are refused (a leaked host LINK carries
+      // the token but not the seat). This is the one knock answered with no ui action.
+      const hostSeat = hostSeatOf(knock.fp);
+      if (hostSeat !== null) {
+        if (boundSeat === null && hostSeat !== '') {
+          boundSeat = hostSeat; // first claim wins
+          log.event('host seat claimed');
+        }
+        if (isBoundHost(knock.fp)) {
+          admitAndCatchUp(r, knock);
+          return;
+        }
+        // Token but wrong/empty seat: refuse host access. Arm a handoff so the real
+        // host — if it IS them on a new device — can release the seat with Ctrl-G.
+        r.deny(knock.id);
+        armHandoff();
+        showToast('⚠ a device opened your host link but is not your bound host — refused. If it is you, press Ctrl-G here to hand over the host seat.', 20000);
+        log.event('refused a host-link opener with the wrong seat');
         return;
       }
       // A guest admitted earlier this session (same browser token) walks straight
@@ -1307,6 +1351,20 @@ async function main() {
     const { chatter, human } = partitionHostInput(d);
     if (chatter) pty.write(Buffer.from(chatter, 'binary'));
     if (human) {
+      // Ctrl-G (BEL) releases the bound host seat — but ONLY while a handoff is
+      // armed (right after a blocked device tried to claim), so a stray BEL never
+      // gets eaten during normal use. This lives on host stdin, which no remote
+      // participant can reach — that is what makes the release host-only.
+      if (handoffTimer && human.includes('\x07')) {
+        clearTimeout(handoffTimer);
+        handoffTimer = null;
+        boundSeat = null;
+        showToast('host seat released — reload your other device to claim it', 12000);
+        log.event('host released the seat via Ctrl-G handoff');
+        const stripped = human.split('\x07').join('');
+        if (stripped) pty.write(Buffer.from(stripped, 'binary'));
+        return;
+      }
       sniffInterrupt(human); // the host's own Esc interrupt is hookless too
       pty.write(Buffer.from(human, 'binary'));
     }

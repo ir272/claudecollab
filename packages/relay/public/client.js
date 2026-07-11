@@ -59,13 +59,17 @@ export function parseLocation(loc) {
  * passworded room — the join password `pass` (host tabs never need one).
  * @returns {string} e.g. "/ws?room=brave-otter&name=sid&token=abc"
  */
-export function buildWsPath({ code, name, token, hostToken, pass } = {}) {
+export function buildWsPath({ code, name, token, hostToken, pass, seat } = {}) {
   const q = new URLSearchParams();
   if (code) q.set('room', code);
   if (name) q.set('name', name);
   if (hostToken) q.set('host', hostToken);
   else if (token) q.set('token', token);
   if (pass && !hostToken) q.set('pass', pass);
+  // The host-seat secret binds the host seat to THIS browser (leaked-link defense):
+  // it never rides the shareable URL — the browser mints it and keeps it locally —
+  // so a stolen host link opened elsewhere presents a different seat and is refused.
+  if (seat && hostToken) q.set('seat', seat);
   return '/ws?' + q.toString();
 }
 
@@ -360,6 +364,12 @@ function main() {
   // Accepted room password, stored per room so a reload glides straight back in
   // (same promise as the token). Cleared the moment the relay rejects it.
   const passKey = (code) => 'claude-share:pass:' + code;
+  // Per-browser host-seat secret (leaked-link defense). Minted once and kept in
+  // this browser's storage; presented only when opening a host tab. A stolen host
+  // link opened in another browser mints a DIFFERENT one, so the host CLI (which
+  // binds the seat to the first it sees) refuses it. Reloads reuse it, so the real
+  // host glides back into the seat.
+  const SEAT_KEY = 'claude-share:seat';
   const POINTER_HZ = 30; // send own pointer ≤ 30/s (spec)
   const POINTER_MS = Math.ceil(1000 / POINTER_HZ);
 
@@ -515,11 +525,20 @@ function main() {
     const pass = typed || store.get(passKey(code)) || '';
     sentPass = pass || null;
     if (typed) store.set(passKey(code), typed);
-    connect({ code, name, token, hostToken: loc.hostToken, pass });
+    // Host tabs carry the per-browser seat secret (minted once, kept locally).
+    let seat = null;
+    if (loc.hostToken) {
+      seat = store.get(SEAT_KEY);
+      if (!seat) {
+        seat = uuid();
+        store.set(SEAT_KEY, seat);
+      }
+    }
+    connect({ code, name, token, hostToken: loc.hostToken, pass, seat });
   }
 
   // ── connection ───────────────────────────────────────────────────────────────
-  function connect({ code, name, token, hostToken, pass }) {
+  function connect({ code, name, token, hostToken, pass, seat }) {
     // Supersede any previous socket COMPLETELY. A zombie from an earlier attempt
     // still has live handlers — when the brain dedupes its knock, its deny/close
     // would splash "declined" into a UI that belongs to the NEW attempt.
@@ -537,7 +556,7 @@ function main() {
       ? 'Opening your room…'
       : `Waiting for the host to let you in…`;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = proto + '//' + location.host + buildWsPath({ code, name, token, hostToken, pass });
+    const url = proto + '//' + location.host + buildWsPath({ code, name, token, hostToken, pass, seat });
     let sock;
     try {
       sock = new WebSocket(url);

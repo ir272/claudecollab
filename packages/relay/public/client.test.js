@@ -65,6 +65,18 @@ test('buildWsPath: host tab carries host; a guest carries token+name', () => {
   assert.equal(hq.get('token'), null, 'the host token wins; no browser token is sent');
 });
 
+test('buildWsPath: a host tab carries the seat secret; a guest never does', () => {
+  const host = buildWsPath({ code: 'brave-otter', hostToken: 'H', seat: 'seatABC' });
+  const hq = new URLSearchParams(host.slice(host.indexOf('?') + 1));
+  assert.equal(hq.get('seat'), 'seatABC', 'the host seat rides the host-tab connection');
+
+  const guest = buildWsPath({ code: 'brave-otter', name: 'sid', token: 'abc', seat: 'seatABC' });
+  assert.ok(!guest.includes('seat='), 'a guest never sends a host seat (no host token)');
+
+  const noSeat = buildWsPath({ code: 'brave-otter', hostToken: 'H' });
+  assert.ok(!noSeat.includes('seat='), 'no seat param when none was minted');
+});
+
 test('buildWsPath: a guest carries the room password; a host tab never does', () => {
   const guest = buildWsPath({ code: 'brave-otter', name: 'sid', token: 'abc', pass: 'pw' });
   const gq = new URLSearchParams(guest.slice(guest.indexOf('?') + 1));

@@ -70,7 +70,7 @@ function connectHostTab(webPort, { code, token }) {
   const waiters = [];
   let joined = false;
   const joinWaiters = [];
-  const ws = new WebSocket(`ws://127.0.0.1:${webPort}/ws?room=${code}&host=${token}`);
+  const ws = new WebSocket(`ws://127.0.0.1:${webPort}/ws?room=${code}&host=${token}&seat=hostseat`);
   const pushState = (data) => {
     states.push(data);
     for (let i = waiters.length - 1; i >= 0; i--) {
