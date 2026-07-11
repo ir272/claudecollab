@@ -99,6 +99,36 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
    today, just needs saying on the landing page: solo remote access (open your own
    room from your phone, answer asks from anywhere).
 
+## Hardening batch (2026-07-11, after live-test + codex adversarial review)
+
+DONE this pass:
+- **Pause actually pauses** — routeSend now blocks every Claude-bound guest send
+  while paused (the {ui,command} path bypassed it; onKey already did). Regression
+  test in overlay-state.test.js.
+- **Host-seat binding** — a leaked host LINK no longer grants host. Browser mints
+  a per-browser `seat` secret (localStorage, never in the URL); CLI binds the seat
+  to the first browser (webhost:<token>:<seat>) and refuses token+wrong/absent
+  seat. New-device handoff: a refused attempt arms a 60s window where Ctrl-G in the
+  HOST TERMINAL releases the seat. e2e proves a stolen-link seat is refused.
+- **Honest docs** — README no longer says "kicked out for good" / "stores nothing".
+
+DEFERRED BY IAN'S CHOICE ("we don't need all that security — password + admit/deny
+is the model") — revisit only if the threat model changes:
+- Durable bans: kicked web guests rejoin via new token/incognito/new network;
+  keyless-ssh kicked guests reconnect. No account system to bind to.
+- Flood caps: protocol decoder only caps newline-free buffers, so a huge COMPLETE
+  json line (giant key/ui/state payload) is parsed unbounded; pending-knock spam
+  can flood the host with cards without hitting the room cap.
+- Fly proxy client IP: knock lockout uses req.socket.remoteAddress = Fly's proxy,
+  not the real client — per-IP limits misbehave in prod (need X-Forwarded-For).
+- Room password rides the WS query string + localStorage (history/proxy leak).
+
+KNOWN BUGS NOT YET FIXED (not security; surfaced by codex — decide next):
+- `/end` always writes session.md even on the browser's "Just end" (overwrites an
+  existing session.md when the host chose NOT to save). claude-share.js ~695.
+- Bracketed-paste text isn't escape-sanitized before landing in join cards /
+  session.md — a pasted prompt could inject terminal escapes. drafts.js/card.js.
+
 ## Machine-local cleanup owed (Ian's old Mac)
 
 `/etc/hosts` has a pin `168.220.81.240 claudeshare.fly.dev` (ISP DNS had cached an
