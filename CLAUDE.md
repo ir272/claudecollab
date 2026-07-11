@@ -72,10 +72,14 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
    workspace + `collab-protocol` crate (spec-port of protocol.js, 7 tests green)
    stays in-repo as the restart point. Revisit only on a concrete trigger:
    real non-Node demand, relay scale pain, or a brew-distribution moment.
-4a. LAUNCH PATH (active): npm packaging (publish the Node CLI, command `collab`,
-   default relay claudecollab.org) → landing page at / → README-for-strangers →
-   open the community relay (drop ROOM_SECRET; maxRooms + lockouts + room
-   passwords are the abuse lids) → repo public
+4a. LAUNCH PATH (active): npm packaging → landing page at / → README-for-strangers
+   → open the community relay (drop ROOM_SECRET; maxRooms + lockouts + room
+   passwords are the abuse lids) → repo public.
+   npm: package is **@claudecollab/cli** (unscoped `claudecollab` permanently
+   blocked — npm similarity rule vs the existing `claude-collab`, a real 2025
+   project by Peter Yuqin; org scope = the @anthropic-ai/claude-code pattern).
+   Bins: `collab` (host) + `collab-relay` (self-host). Default relay
+   claudecollab.org. publishConfig.access=public baked in.
 5. Agent door: expose the guest protocol as a machine interface (MCP server —
    join_room / read_screen / wait_for_idle / send_prompt / answer_ask) so an
    EXTERNAL agent can supervise a session as an outer loop: independent judge
