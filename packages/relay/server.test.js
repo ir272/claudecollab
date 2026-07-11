@@ -397,3 +397,42 @@ test('relay: reclaiming an expired/unknown room is refused', async (t) => {
   const resp = await host.next((m) => m.t === TYPES.GONE || m.t === TYPES.ROOM);
   assert.equal(resp.t, TYPES.GONE, 'nothing to reclaim');
 });
+
+test('relay: a configured publicUrl rides the room grant as webUrl', async (t) => {
+  const relay = await startRelay({
+    port: 0,
+    host: '127.0.0.1',
+    hostKey: newKey(),
+    publicUrl: 'https://claude-share.fly.dev',
+  });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  host.send({ t: TYPES.HELLO, want: 'room' });
+  const room = await host.next((m) => m.t === TYPES.ROOM);
+  assert.equal(room.webUrl, 'https://claude-share.fly.dev', 'the host learns the public origin');
+});
+
+test('relay: maxRooms lids unauthenticated room creation (a public relay needs a ceiling)', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey(), maxRooms: 1 });
+  t.after(() => relay.close());
+
+  const first = await connectHost(relay.port);
+  first.send({ t: TYPES.HELLO, want: 'room' });
+  const granted = await host_room(first);
+  assert.match(granted.code, /^[a-z]+-[a-z]+$/, 'the first room is granted normally');
+
+  // The relay is full: the second HELLO gets its connection closed, never a ROOM.
+  const second = await connectHost(relay.port);
+  const closed = new Promise((res) => second.stream.on('close', () => res('closed')));
+  second.send({ t: TYPES.HELLO, want: 'room' });
+  const outcome = await Promise.race([
+    host_room(second).then(() => 'room'),
+    closed,
+  ]);
+  assert.equal(outcome, 'closed', 'a full relay refuses by closing, not by granting');
+
+  function host_room(h) {
+    return h.next((m) => m.t === TYPES.ROOM);
+  }
+});

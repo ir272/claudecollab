@@ -43,6 +43,7 @@ const relay = await startRelay({
   publicUrl,
   hostKey,
   hostName,
+  maxRooms: Number(process.env.MAX_ROOMS || 50),
 });
 
 console.log(`relay up: ssh :${relay.port} · web :${relay.webPort}${publicUrl ? ` · public ${publicUrl}` : ''}`);

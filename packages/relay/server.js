@@ -92,6 +92,10 @@ export function startRelay(opts = {}) {
     // "https://claude-share.fly.dev"). Sent to the host in the room grant so its
     // printed/copied links carry the real https origin instead of host:webPort.
     publicUrl,
+    // Relay-wide room ceiling. Room creation is unauthenticated (any ssh client
+    // can HELLO), so a public relay needs a lid on how many rooms strangers can
+    // pile up. Far above any real usage; a flood just gets its connection closed.
+    maxRooms = 50,
     registry: registryOpts = {},
   } = opts;
 
@@ -179,6 +183,13 @@ export function startRelay(opts = {}) {
       switch (msg.t) {
         case TYPES.HELLO: {
           if (code) return; // one room per host connection
+          if (live.size >= maxRooms) {
+            // Full: refuse by closing. The CLI's reconnect loop backs off; real
+            // rooms expire on their 10-min TTL, so capacity frees itself.
+            safeEnd(stream);
+            safeEnd(conn);
+            return;
+          }
           const room = registry.create();
           code = room.code;
           live.set(code, {
