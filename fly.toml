@@ -11,6 +11,15 @@
 # Custom domain later:
 #   fly certs add claudeshare.dev   # then point DNS (CNAME → this app) as instructed
 #   ...and update PUBLIC_URL to https://claudeshare.dev
+#
+# Ops notes (learned the hard way):
+#   • MUST stay at exactly ONE machine (`fly scale count 1`): rooms live in the
+#     relay process's memory — two machines = two brains splitting the same room.
+#     Fly auto-adds a second "for HA" on fresh deploys; scale it back down.
+#   • A redeploy/restart ends all live rooms (fresh registry): hosts drop to solo
+#     and start a new room. Deploy between sessions, not during.
+#   • The ssh door (raw TCP 2222) requires the dedicated IPv4 ($2/mo) — a shared
+#     IP only routes ports with http/tls handlers.
 
 app = "claudeshare"
 primary_region = "dfw"
