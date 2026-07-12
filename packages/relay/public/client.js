@@ -332,6 +332,37 @@ export function overlayView(state, selfId) {
     seenLabel: seenLabel(k.seen),
   }));
 
+  // Two composing surfaces (the windows UI):
+  //   • PANELS — one per person who can type. A panel shows that user's PRIVATE
+  //     draft: a home (place==null) box only they occupy → their own space to type
+  //     a prompt SEPARATELY.
+  //   • FLOATING drafts — any box with a place (opened via "+ draft") or co-written
+  //     by 2+ people → floats over the columns for writing a prompt TOGETHER.
+  const prompters = participants.filter((p) => p.role !== 'viewer');
+  const claimed = new Set();
+  const windowBoxFor = (uid) => {
+    let b = drafts.find((d) => !d.place && !claimed.has(d.id) && d.carets.some((c) => c.id === uid));
+    if (!b) b = drafts.find((d) => !d.place && !claimed.has(d.id) && d.authors.length === 1 && d.authors[0].id === uid);
+    if (b) claimed.add(b.id);
+    return b || null;
+  };
+  const panels = prompters.map((p) => {
+    const box = windowBoxFor(p.id);
+    return {
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      role: p.role,
+      isSelf: p.id === selfId,
+      canType: p.id === selfId && caps.canCompose,
+      boxId: box?.id ?? null,
+      text: box?.text ?? '',
+      typing: !!(box && (box.text || box.carets.some((c) => c.id === p.id))),
+      pending: queue.filter((q) => q.author === p.id).map((q) => ({ n: q.n, text: q.text })),
+    };
+  });
+  const floatingDrafts = drafts.filter((d) => !claimed.has(d.id));
+
   return {
     room: s.room || '',
     selfId: selfId || null,
@@ -341,6 +372,8 @@ export function overlayView(state, selfId) {
     participants: participants.map((p) => ({ ...p, isSelf: p.id === selfId })),
     othersPointers,
     drafts,
+    panels,
+    floatingDrafts,
     queue,
     claudeState: s.claudeState || 'idle',
     claude: claudeLabel(s.claudeState),
@@ -460,6 +493,7 @@ function main() {
   const pausedCard = $('#paused');
   const claudeChip = $('#claude-chip');
   const draftsLayer = $('#drafts');
+  const panelsGrid = $('#panels');
   const queueChip = $('#queue-chip');
   const queuePop = $('#queue-pop');
   const composer = $('#composer');
@@ -672,8 +706,12 @@ function main() {
     if (!term) createTerm();
     fit();
     render();
-    // Keep the composer ready to type the moment the room is live.
-    focusComposer();
+    // Drop the cursor into my own window so I can type a prompt right away.
+    setTimeout(() => {
+      const mine = panelEls.get(selfId);
+      if (mine && !mine.input.disabled) mine.input.focus();
+      else focusComposer();
+    }, 0);
   }
 
   function createTerm() {
@@ -949,13 +987,18 @@ function main() {
   // brain sees the Esc as "leave the box" (never an interrupt while composing);
   // the next keystroke is then raw to Claude.
   stage.addEventListener('mousedown', (e) => {
-    if (e.target.closest('.fdraft')) return;
+    if (e.target.closest('.fdraft, .user-window')) return;
+    // Clicking Claude's terminal means "talk to Claude": leave any draft I'm in
+    // (its text lives on) and hand my keys to Claude's live session.
+    const active = document.activeElement;
+    if (active?.classList?.contains('uw-input')) active.blur();
     const v = lastState ? overlayView(lastState, selfId) : null;
     if (v && v.drafts.some((d) => d.focusedBySelf)) sendKey('\x1b');
+    if (v?.canCompose && !composer.disabled) setTimeout(() => composer.focus(), 0);
   });
-  // Double-click an empty spot → a new draft spawns right there (explicit creation).
+  // Double-click empty space → a shared "write together" draft spawns right there.
   stage.addEventListener('dblclick', (e) => {
-    if (e.target.closest('.fdraft')) return;
+    if (e.target.closest('.fdraft, .user-window')) return;
     const v = lastState ? overlayView(lastState, selfId) : null;
     if (!v?.canCompose) return;
     const r = stage.getBoundingClientRect();
@@ -973,6 +1016,7 @@ function main() {
       // Straight to Claude. A key that landed on the still-focused catcher was
       // already mailed by its own handler — don't send it twice.
       if (e.target === composer) return;
+      if (e.target.classList?.contains('uw-input')) return; // a window owns its keys
       const b = directKeyBytes(e);
       if (b != null) {
         e.preventDefault();
@@ -995,8 +1039,12 @@ function main() {
     setTimeout(focusComposer, 0);
   });
   newDraftBtn.addEventListener('click', () => {
+    // "+ draft" opens a SHARED box to write a prompt together: spawn a draft and
+    // float it over the columns (a place != null box is the shared surface).
+    const n = draftsLayer.querySelectorAll('.fdraft').length;
+    pendingSpawn = { x: 0.24 + (n % 3) * 0.07, y: 0.22 + (n % 3) * 0.09 };
     sendKey(NEW_DRAFT_BYTES);
-    composer.focus(); // straight to the catcher — the new box is already yours
+    setTimeout(() => composer.focus(), 0); // keys land in the new shared box
   });
 
   // ── host controls ────────────────────────────────────────────────────────────
@@ -1075,24 +1123,41 @@ function main() {
   function render() {
     if (!lastState) return;
     const v = overlayView(lastState, selfId);
-    // Direct is derived: anyone who can prompt, with no draft focused, types
-    // straight into Claude.
+    // A just-spawned "+ draft" (or double-click) box: pin it to a floating spot so
+    // it becomes a shared "write together" box rather than a private window draft.
+    if (pendingSpawn) {
+      const fresh = v.drafts.find((d) => d.focusedBySelf && !d.place && d.text === '');
+      if (fresh) {
+        sendMsg({ t: 'ui', action: { kind: 'place', id: fresh.id, ...pendingSpawn } });
+        pendingSpawn = null;
+      }
+    }
+    // Direct-to-Claude: you can prompt, you're not composing in any draft, and your
+    // cursor isn't in a window input → keys go straight into Claude's terminal (so
+    // y/n permission prompts and the like still work, like before).
     const selfComposing = v.drafts.some((d) => d.focusedBySelf);
-    directOn = v.canCompose && !selfComposing;
-    // The "keys go into Claude" indicator is Claude's own blinking cursor in the
-    // mirror (forced filled+blinking via CSS) — no chip needed.
+    const inWindow = document.activeElement?.classList?.contains('uw-input');
+    directOn = v.canCompose && !selfComposing && !inWindow;
     stage.classList.toggle('direct', directOn);
-    // Composing → the key catcher must hold focus, so typing lands in the draft
-    // without a manual click (unless a drag-selection is standing).
-    if (selfComposing && !composer.disabled && document.activeElement !== composer) {
+    // While co-writing a FLOATING box, the invisible key-catcher must hold focus so
+    // keys land in the shared box (unless a window input owns them).
+    const floatingFocused = v.floatingDrafts.some((d) => d.focusedBySelf);
+    if (floatingFocused && !inWindow && !composer.disabled && document.activeElement !== composer) {
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed) composer.focus();
+    } else if (directOn && !composer.disabled && document.activeElement !== composer && !inWindow) {
+      // hand keys to Claude when nothing else owns focus
+      const ae = document.activeElement;
+      const typingElsewhere = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
+      const sel = window.getSelection();
+      if (!typingElsewhere && (!sel || sel.isCollapsed)) composer.focus();
     }
     ghostHint(v);
     applyView(v);
     renderStatusbar(v);
     renderClaudeChip(v);
     renderPaused(v);
+    renderPanels(v);
     renderDrafts(v);
     renderQueue(v);
     renderComposer(v);
@@ -1142,7 +1207,7 @@ function main() {
     if (hinted) return;
     if (v.participants.filter((p) => p.role !== 'viewer').length < 2) return;
     hinted = true;
-    localToast('compose together: + draft, or double-click the terminal');
+    localToast('type your own prompt in your window — or press + draft to write one together');
   }
   function localToast(msg, ms = 6000) {
     toastEl.textContent = msg;
@@ -1156,6 +1221,115 @@ function main() {
   function renderPaused(v) {
     pausedCard.hidden = !v.paused;
     stage.classList.toggle('paused', v.paused);
+    panelsGrid.parentElement?.classList.toggle('paused', v.paused);
+  }
+
+  // ── per-user windows: everyone's own space to type a prompt SEPARATELY ────────
+  // The panel DOM is rebuilt only when the roster changes; the dynamic bits (draft
+  // text, status, sent prompts) update in place so a focused input never loses focus.
+  let panelsKey = '';
+  const panelEls = new Map(); // participant id -> { input, body, status }
+  function renderPanels(v) {
+    const key = v.panels.map((p) => `${p.id}:${p.name}:${p.color}:${p.canType}`).join('|');
+    if (key !== panelsKey) {
+      panelsKey = key;
+      panelsGrid.innerHTML = '';
+      panelEls.clear();
+      for (const p of v.panels) {
+        const win = el('div', 'user-window' + (p.isSelf ? ' self' : ''));
+        win.style.setProperty('--c', p.color);
+        const head = el('div', 'uw-header');
+        const dot = el('span', 'uw-dot');
+        dot.style.setProperty('--c', p.color);
+        head.append(dot, el('span', 'uw-name', p.isSelf ? `You (${p.name})` : p.name));
+        const status = el('span', 'uw-status');
+        head.append(status);
+        const body = el('div', 'uw-body');
+        const wrap = el('div', 'uw-input-wrap');
+        const input = el('input', 'uw-input');
+        input.type = 'text';
+        input.spellcheck = false;
+        input.autocomplete = 'off';
+        input.placeholder = p.isSelf ? 'Type your prompt…' : `${p.name}'s prompt…`;
+        input.disabled = !p.canType;
+        if (p.canType) wirePanelInput(input);
+        wrap.append(input);
+        win.append(head, body, wrap);
+        panelsGrid.append(win);
+        panelEls.set(p.id, { input, body, status });
+      }
+    }
+    for (const p of v.panels) {
+      const e = panelEls.get(p.id);
+      if (!e) continue;
+      e.status.textContent = p.typing ? 'typing…' : 'idle';
+      e.status.classList.toggle('typing', p.typing);
+      // mirror the live draft into the input — the brain is the authority, so we
+      // never echo locally; setting value keeps every tab showing the same text.
+      if (e.input.value !== p.text) {
+        const focused = document.activeElement === e.input;
+        e.input.value = p.text;
+        if (focused) {
+          const end = e.input.value.length;
+          try {
+            e.input.setSelectionRange(end, end);
+          } catch {
+            /* not a text input state */
+          }
+        }
+      }
+      e.body.innerHTML = '';
+      if (p.pending.length === 0) {
+        e.body.append(
+          el('div', 'uw-empty', p.isSelf ? 'Your sent prompts show here. Enter to send.' : 'No prompts yet.'),
+        );
+      } else {
+        for (const q of p.pending) {
+          const line = el('div', 'uw-line sent');
+          line.append(el('span', 'uw-n', '#' + q.n), document.createTextNode('> ' + q.text));
+          e.body.append(line);
+        }
+      }
+    }
+  }
+
+  // Wire a self window input: keys route to the brain (which owns the draft), so the
+  // input is a controlled mirror of my private box. Enter sends it into the queue.
+  function wirePanelInput(input) {
+    input.addEventListener('focus', () => {
+      const v = lastState ? overlayView(lastState, selfId) : null;
+      const mine = v?.panels.find((p) => p.isSelf);
+      if (!mine) return;
+      if (mine.boxId) {
+        // make sure my caret sits in my window box (not a floating box I co-wrote)
+        const box = v.drafts.find((d) => d.id === mine.boxId);
+        const caretHere = box?.carets.some((c) => c.self);
+        if (!caretHere) sendMsg({ t: 'ui', action: { kind: 'caret', id: mine.boxId, offset: mine.text.length } });
+      } else {
+        sendKey(NEW_DRAFT_BYTES); // no private draft yet → start one
+      }
+    });
+    input.addEventListener('keydown', (e) => {
+      const bytes = keyToBytes(e); // Enter → send, editing chords, printable chars
+      if (bytes != null) {
+        e.preventDefault();
+        sendKey(bytes);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) return; // browser shortcuts stay native
+      if (e.key.length === 1) e.preventDefault(); // unmapped printable: swallow
+    });
+    input.addEventListener('paste', (e) => {
+      e.preventDefault();
+      const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+      if (text) sendKey(pasteBytes(text));
+    });
+    // never let a local echo diverge from the brain's authoritative text
+    input.addEventListener('input', () => {
+      const v = lastState ? overlayView(lastState, selfId) : null;
+      const mine = v?.panels.find((p) => p.isSelf);
+      if (mine && input.value !== mine.text) input.value = mine.text;
+    });
   }
 
   let lastDraftsJson = '';
@@ -1164,19 +1338,13 @@ function main() {
     // Rebuild only when the drafts actually changed: every rebuild would destroy a
     // native drag-selection, and state frames arrive for unrelated reasons
     // (pointers). Mid-drag renders are skipped too — pointerup re-syncs.
-    const json = JSON.stringify(v.drafts);
+    const json = JSON.stringify(v.floatingDrafts);
     if (json === lastDraftsJson || draggingDraft) return;
     lastDraftsJson = json;
     draftsLayer.innerHTML = '';
     const nextIds = new Set();
-    for (const [i, d] of v.drafts.entries()) {
+    for (const [i, d] of v.floatingDrafts.entries()) {
       nextIds.add(d.id);
-      // A box I just spawned by double-click lands where I clicked — for everyone.
-      if (pendingSpawn && d.focusedBySelf && !d.place && d.text === '') {
-        sendMsg({ t: 'ui', action: { kind: 'place', id: d.id, ...pendingSpawn } });
-        d.place = pendingSpawn; // optimistic, until the next state frame confirms
-        pendingSpawn = null;
-      }
       // Entrance animation only for a box that just APPEARED — this render runs on
       // every keystroke (full rebuild), and replaying it would strobe. Same idea
       // for the border beam: phase it by wall-clock so a rebuild never resets it.
