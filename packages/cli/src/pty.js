@@ -10,8 +10,45 @@
 // node-pty is a native module and is imported lazily inside startPty, so this
 // file (and FrameSplitter's tests) load fine even where node-pty isn't built.
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
 /** Synchronized-update END marker. Claude ends every repaint frame with this. */
 export const SU_END = '\x1b[?2026l';
+
+// node-pty forks a small `spawn-helper` binary to launch the child, and that file
+// must be executable. Installers that skip package build scripts (npm's
+// allow-scripts / ignore-scripts policies, pnpm by default) ship it WITHOUT the
+// execute bit, so the very first spawn dies with "posix_spawnp failed". A
+// postinstall script can't fix this — those same policies block it — so we restore
+// the bit at RUNTIME, right before spawning. Best-effort and idempotent: if the
+// bit is already set (or we can't touch the file) we do nothing and let spawn
+// surface the real error. macOS/Linux only; Windows has no such helper.
+export function ensureSpawnHelperExecutable(requireFn) {
+  if (process.platform === 'win32') return;
+  try {
+    const req = requireFn ?? createRequire(import.meta.url);
+    const ptyDir = path.dirname(req.resolve('node-pty/package.json'));
+    const candidates = [path.join(ptyDir, 'build', 'Release', 'spawn-helper')];
+    const prebuilds = path.join(ptyDir, 'prebuilds');
+    try {
+      for (const d of fs.readdirSync(prebuilds)) candidates.push(path.join(prebuilds, d, 'spawn-helper'));
+    } catch {
+      /* no prebuilds dir on this layout */
+    }
+    for (const f of candidates) {
+      try {
+        const { mode } = fs.statSync(f);
+        if (!(mode & 0o111)) fs.chmodSync(f, mode | 0o111); // add u+g+o execute
+      } catch {
+        /* not present here, or not ours to chmod — skip */
+      }
+    }
+  } catch {
+    /* couldn't even resolve node-pty — the import below throws the real error */
+  }
+}
 /** Synchronized-update BEGIN marker (exported for reference / future use). */
 export const SU_BEGIN = '\x1b[?2026h';
 
@@ -78,6 +115,7 @@ export async function startPty({
   cwd,
   flushMs = 8,
 } = {}) {
+  ensureSpawnHelperExecutable(); // fix node-pty's spawn-helper exec bit before spawning
   const mod = await import('node-pty');
   const spawn = mod.spawn ?? mod.default?.spawn;
   if (typeof spawn !== 'function') {

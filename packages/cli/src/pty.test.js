@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FrameSplitter, SU_END } from './pty.js';
+import { mkdtempSync, mkdirSync, writeFileSync, statSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FrameSplitter, SU_END, ensureSpawnHelperExecutable } from './pty.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FrameSplitter is the pure, testable heart of the PTY wrapper. Claude Code v2
@@ -76,4 +79,32 @@ test('markerless output stays buffered and comes out on flush', () => {
   const fs = new FrameSplitter();
   assert.deepEqual(fs.push('plain banner text, no frame'), []);
   assert.equal(fs.flush(), 'plain banner text, no frame');
+});
+
+// The node-pty spawn-helper exec-bit self-heal: installers that skip build scripts
+// ship spawn-helper non-executable, and the first spawn dies "posix_spawnp failed".
+// startPty() restores the bit at runtime. Test the mechanism in isolation against a
+// fake node-pty layout (via the injectable require), so it never touches real deps.
+test('ensureSpawnHelperExecutable restores a stripped exec bit on node-pty spawn-helper', (t) => {
+  if (process.platform === 'win32') return; // no spawn-helper on Windows
+  const dir = mkdtempSync(join(tmpdir(), 'cs-pty-heal-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  // fake node-pty: package.json + a prebuild spawn-helper with NO execute bit
+  writeFileSync(join(dir, 'package.json'), '{"name":"node-pty"}');
+  const pb = join(dir, 'prebuilds', 'darwin-arm64');
+  mkdirSync(pb, { recursive: true });
+  const helper = join(pb, 'spawn-helper');
+  writeFileSync(helper, '#!/bin/sh\n', { mode: 0o644 });
+  assert.equal(statSync(helper).mode & 0o111, 0, 'starts non-executable (broken install)');
+
+  const fakeRequire = { resolve: (id) => (id === 'node-pty/package.json' ? join(dir, 'package.json') : id) };
+  ensureSpawnHelperExecutable(fakeRequire);
+
+  assert.notEqual(statSync(helper).mode & 0o111, 0, 'exec bit restored — spawn will succeed');
+});
+
+test('ensureSpawnHelperExecutable is a no-op that never throws when node-pty is absent', () => {
+  const fakeRequire = { resolve: () => { throw new Error('Cannot find module'); } };
+  assert.doesNotThrow(() => ensureSpawnHelperExecutable(fakeRequire));
 });
