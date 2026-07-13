@@ -362,6 +362,11 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   a.type('use tailwind for all of it\r');
   await hostTab.waitForState((s) => s.queue.some((q) => q.text === 'use tailwind for all of it' && q.author === aId));
 
+  // A's window draft now PERSISTS after each send (composing stays on), so to talk to
+  // Claude directly A must step OUT of it first — Esc over ssh, a terminal click in the
+  // browser. Without this, the `y` below composes into the draft instead of answering.
+  a.type('\x1b');
+
   // ── the gate: a VIEWER's `y` is REJECTED (never reaches Claude) ──────────────
   hostTab.command('/role @a viewer');
   await hostTab.waitForState((s) => s.participants.find((p) => p.id === aId)?.role === 'viewer');

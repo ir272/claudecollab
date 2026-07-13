@@ -527,6 +527,41 @@ body {
   box-shadow: 0 0 0 1px rgba(232, 163, 61, 0.4), 0 0 22px rgba(232, 163, 61, 0.14),
     0 24px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
+/* Claude is waiting on a yes/no — pulse the frame and label it, so nobody answers
+   by typing into their own window. Clicking the terminal hands keys to Claude. */
+#stage.ask {
+  cursor: pointer;
+  animation: ask-pulse 1.6s ease-in-out infinite;
+}
+#stage.ask::after {
+  content: "⚠ Claude needs a yes / no — click here to answer";
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #1a1205;
+  background: rgba(232, 163, 61, 0.96);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  white-space: nowrap;
+}
+@keyframes ask-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1.5px rgba(232, 163, 61, 0.55), 0 0 18px rgba(232, 163, 61, 0.18),
+      0 24px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 0 1.5px rgba(232, 163, 61, 0.9), 0 0 34px rgba(232, 163, 61, 0.42),
+      0 24px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+}
 
 /* ── the per-user compose windows: a row beneath Claude's live terminal ──────
    Each column is one person's own space to write a prompt SEPARATELY; the

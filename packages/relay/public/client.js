@@ -1139,6 +1139,9 @@ function main() {
     const inWindow = document.activeElement?.classList?.contains('uw-input');
     directOn = v.canCompose && !selfComposing && !inWindow;
     stage.classList.toggle('direct', directOn);
+    // Claude is waiting on a permission ask → nudge people to click the terminal to
+    // answer, so a stray y/n doesn't get composed into their own window instead.
+    stage.classList.toggle('ask', v.claudeState === 'ask');
     // While co-writing a FLOATING box, the invisible key-catcher must hold focus so
     // keys land in the shared box (unless a window input owns them).
     const floatingFocused = v.floatingDrafts.some((d) => d.focusedBySelf);

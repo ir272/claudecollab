@@ -82,19 +82,14 @@ test('Enter sends only the draft the cursor is in; other boxes are untouched', (
   const d = new Drafts();
   d.keystroke('ian', 'first');
   d.keystroke('james', 'second');
+  const id = d.activeBox('ian').id;
   const eff = d.keystroke('ian', ENTER);
-  assert.deepEqual(eff.send, { text: 'first', author: 'ian', authors: ['ian'], boxId: d0Removed(eff) });
-  // ian's box vanished; james's remains
-  assert.equal(d.boxes.length, 1);
-  assert.equal(d.boxes[0].text, 'second');
-  // ian no longer has a focused box
-  assert.equal(d.activeBox('ian'), null);
+  assert.deepEqual(eff.send, { text: 'first', author: 'ian', authors: ['ian'], boxId: id });
+  // ian's window box stays (emptied, ready for the next prompt); james's is untouched
+  assert.equal(d.activeBox('ian').id, id, 'same box kept, not recreated');
+  assert.equal(d.activeBox('ian').text, '');
+  assert.equal(d.activeBox('james').text, 'second');
 });
-
-// helper: the send effect carries the id of the box that was removed
-function d0Removed(eff) {
-  return eff.send.boxId;
-}
 
 test('a sent draft vanishes and takes every cursor in it with it', () => {
   const d = new Drafts();
@@ -147,6 +142,33 @@ test('after sending, the same user can start a fresh draft by typing', () => {
   d.keystroke('ian', ENTER);
   d.keystroke('ian', 'two');
   assert.equal(only(d).text, 'two');
+});
+
+// A solo window box (unplaced, only its owner in it) is the per-user bottom-row
+// composer: Enter empties it but keeps it, so the owner can fire the next prompt
+// right away (it queues behind the running one) without falling through to Claude.
+test('Enter on a solo window box keeps the (emptied) box so composing continues', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'first prompt');
+  const id = d.activeBox('ian').id;
+  const eff = d.keystroke('ian', ENTER);
+  assert.equal(eff.send.text, 'first prompt'); // still sends
+  const box = d.activeBox('ian');
+  assert.ok(box, 'the window box is still there');
+  assert.equal(box.id, id, 'same box, kept not recreated');
+  assert.equal(box.text, '', 'emptied, ready for the next prompt');
+  assert.equal(box.cursors.get('ian'), 0, 'caret back at the start');
+});
+
+test('Enter on a placed (floating) box still removes it', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'shared');
+  const id = d.activeBox('ian').id;
+  d.placeBox(id, { x: 0.2, y: 0.3 }); // dropped on the terminal → floating box
+  const eff = d.keystroke('ian', ENTER);
+  assert.equal(eff.send.text, 'shared');
+  assert.equal(d.boxes.length, 0, 'a placed box is one-shot and vanishes on send');
+  assert.equal(d.activeBox('ian'), null);
 });
 
 // ── starting a fresh draft (Ctrl+N) ──────────────────────────────────────────
