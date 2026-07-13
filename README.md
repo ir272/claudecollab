@@ -1,15 +1,13 @@
 # ✦ claudecollab
 
-**Use Claude Code with your friends.** You run one command. Your friends open a link — nothing to install — and use the same Claude with you. Everyone can watch and type.
-
-It's like sharing your screen, except your friends can type too.
+**Use Claude Code with your friends.** You run one command. Your friends open a link and can collaborate with the same Claude as you.
 
 ```
    You                 a helper server            Your friends
 (you run Claude)  <-->  (passes messages)   <-->  (open a link)
 ```
 
-Your terminal looks almost like normal Claude — just one extra line at the bottom. All the sharing happens in the web browser.
+Your terminal looks like normal Claude, just one extra line at the bottom. All the sharing happens in the web browser.
 
 ## Start a session
 
@@ -32,9 +30,9 @@ Your friends just open the share link in a browser. They don't install anything.
 | the one ending in `?host=…` | **Just you.** Opening it makes you the boss of the room. |
 | the plain one | **Share this.** Friends use it to ask to join. |
 
-The Invite button and your clipboard always have the safe one to share.
+The Invite button adds the plain one to your clipboard.
 
-Want an extra lock? Start with `collab --room-password <pw>`. Then friends have to type the password before they can even ask to join. You still choose who gets in.
+Want an extra guardrail? Start with `collab --room-password <pw>`. Then friends have to type the password before they can even ask to join. You still choose who gets admitted.
 
 ## Roles
 
@@ -46,17 +44,16 @@ Want an extra lock? Start with `collab --room-password <pw>`. Then friends have 
 
 "Run the room" means let people in, remove them, pause, or end it.
 
-## How it feels
+## How it works
 
-- Everyone who can type gets their own little box at the bottom to write in. Type there and press Enter to send. Your box stays open, so you can keep going. If Claude is busy, your message waits in line.
+- Everyone who can type gets their own little box at the bottom to write in. Type there and press Enter to send. Your box stays open, so you can keep going. If Claude is busy, your message will get queued.
 - Want to write a message *together* with someone? Click **+ draft** to open a shared box you both type in.
-- To talk to Claude directly — like answering a yes/no question — click Claude's screen. When Claude is waiting for a yes/no, the screen lights up to tell you to click.
+- To talk to Claude directly (to approve y/n questions, answer questions, etc) click Claude's CLI text line.
 - Everyone sees the same screen, and scrolling is shared.
-- Close the tab by accident? Just reopen the link — you pop right back in. Get kicked out? You're out.
 
-## The most important thing to know
+## Important note
 
-When a friend types something, **it runs on your computer, as if you typed it.** So only let in people you trust. The helper server can see your screen too, so think of a room like sharing your screen — not a secret vault. You can hit **Pause** anytime, or **End** to close the room.
+When a friend types something, **it runs on your computer, as if you typed it.** So only let in people you trust. You can hit **Pause** anytime, or **End** to close the room.
 
 ## Run your own server (optional)
 
@@ -78,8 +75,8 @@ fly deploy
 
 Two safety features come built in:
 
-- **Room password** (`ROOM_SECRET`) — if you set this, only people who know it can *start* rooms on your server. People *joining* a room don't need it. Hosts pass it with `CLAUDE_SHARE_SECRET` or `--secret`.
-- **Server ID check** — the first time you connect, the app remembers your server's ID. If it ever changes, it stops and warns you, so nobody can pretend to be your server.
+- **Room password** (`ROOM_SECRET`) — if you set this, only people who know it can *start* rooms on your server. People *joining* a room don't need it.
+- **Server ID check** the first time you connect, the app remembers your server's ID. If it ever changes, it stops and warns you, so nobody can pretend to be your server.
 
 ## All the options
 
@@ -94,14 +91,6 @@ Two safety features come built in:
 | `--cmd <program>` | run something other than `claude` |
 | `-- <args…>` | anything after `--` is passed to the program you're running |
 
-## Want to work on it?
-
-```bash
-npm install
-npm test           # run all the tests
-scripts/rig.sh     # a local playground (fake Claude) for trying UI changes
-```
-
 <details>
 <summary>How it's built</summary>
 
@@ -113,14 +102,10 @@ packages/relay/    the server (one door for terminals, one for browsers)
 packages/cli/      the main program you run — the brain
 ```
 
-- The app runs Claude and adds one status line at the bottom.
-- It knows when Claude is busy or waiting by listening to Claude's own signals, not by reading the screen. When it's unsure, it plays it safe.
-- The server saves nothing to disk — turn it off and rooms disappear.
-
 </details>
 
 ## License
 
-[MIT](LICENSE) — free to use and change. This is an independent project, not made or approved by Anthropic. "Claude" is Anthropic's trademark; this tool just wraps the Claude Code you already have.
+[MIT](LICENSE) — free to use and change. This is an independent project, not made or approved by Anthropic.
 
-**In short:** `npm i -g @claudecollab/cli` → `collab` → share the link. Friends need nothing but a browser. You decide who gets in — and remember, their prompts run on your computer.
+Contributions are welcome! Please open a PR and add @ir272 as a reviewer.
