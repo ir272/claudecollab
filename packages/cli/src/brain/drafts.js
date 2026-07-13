@@ -426,7 +426,16 @@ export class Drafts {
     const box = this.activeBox(userId);
     if (!box || box.atoms.length === 0) return { send: null, changed: false };
     const send = { text: expandedText(box), author: userId, authors: [...box.authors], boxId: box.id };
-    this.boxes = this.boxes.filter((b) => b !== box); // the sent draft vanishes, cursors and all
+    // A solo window box (unplaced, only its owner in it) is the per-user bottom-row
+    // composer: empty it but KEEP it so the owner can fire the next prompt right away
+    // (it queues behind the running one) instead of falling through to Claude. Placed
+    // or co-written boxes are one-shot and still vanish, cursors and all.
+    if (box.place == null && box.cursors.size === 1) {
+      box.atoms = [];
+      box.cursors.set(userId, 0);
+    } else {
+      this.boxes = this.boxes.filter((b) => b !== box);
+    }
     return { send, changed: true };
   }
 

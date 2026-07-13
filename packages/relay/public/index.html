@@ -65,7 +65,7 @@
         <button id="toast" class="notice-chip" type="button" title="dismiss" hidden></button>
         <span id="knocks" class="knocks"></span>
         <button id="queue-chip" class="ctrl qchip" type="button" title="Prompts waiting for Claude" hidden></button>
-        <button id="new-draft" class="ctrl" type="button" title="Start a draft (or double-click the terminal)">+ draft</button>
+        <button id="new-draft" class="ctrl" type="button" title="Open a shared draft to write a prompt together">+ draft</button>
         <span id="host-controls" class="host-controls" hidden>
           <button id="copy-invite" class="ctrl" type="button" title="Copy invite link"><span class="ico">⧉</span> Invite</button>
           <button id="pause-btn" class="ctrl" type="button" title="Pause sharing"><span class="ico">⏸</span></button>
@@ -85,10 +85,11 @@
       </div>
 
       <main class="workspace">
+        <!-- Claude's live session: the shared terminal everyone watches respond.
+             Floating "+ draft" boxes (write a prompt TOGETHER) overlay it. -->
         <div id="stage">
           <div id="term"></div>
           <div id="cursors" aria-hidden="true"></div>
-          <!-- floating draft boxes live INSIDE the terminal surface -->
           <div id="drafts" class="overlays"></div>
           <div id="paused" class="paused-card" hidden>
             <div class="paused-inner">
@@ -98,8 +99,9 @@
             </div>
           </div>
         </div>
-        <!-- invisible key catcher: keystrokes land here and are mailed to the
-             brain; the floating draft boxes are the only visible composer -->
+        <!-- one window per person: your own space to compose a prompt SEPARATELY -->
+        <div id="panels" class="panels-grid"></div>
+        <!-- invisible key catcher: routes direct + floating-draft keystrokes to the brain -->
         <textarea id="composer" class="composer" rows="1" spellcheck="false" autocomplete="off" aria-label="compose"></textarea>
       </main>
     </section>
