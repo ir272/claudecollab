@@ -1138,18 +1138,18 @@ function main() {
       endConfirm.append(el('span', null, 'Save session.md?'));
       const save = el('button', 'kbtn yes', 'Save & end');
       const skip = el('button', 'kbtn no', 'Just end');
-      // The save choice is resolved by the host CLI's /end confirmation; the browser
-      // fires /end either way (the two-step gate lives here so the host never has to
-      // touch the terminal). Both buttons end the room.
-      save.onclick = () => finishEnd();
-      skip.onclick = () => finishEnd();
+      // The two-step gate lives here so the host never has to touch the terminal.
+      // "Save & end" writes session.md (/end); "Just end" writes nothing
+      // (/end nosave) so it can't overwrite an existing file. Both end the room.
+      save.onclick = () => finishEnd(true);
+      skip.onclick = () => finishEnd(false);
       endConfirm.append(save, skip);
     }
   }
-  function finishEnd() {
+  function finishEnd(save) {
     endStep = 0;
     renderEndConfirm();
-    sendCommand('/end');
+    sendCommand(save ? '/end' : '/end nosave');
   }
 
   // ── render ─────────────────────────────────────────────────────────────────

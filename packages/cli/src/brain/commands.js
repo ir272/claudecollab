@@ -72,8 +72,12 @@ export function parse(text) {
       }
       return { name, error: QUEUE_USAGE };
     }
+    case 'end':
+      // /end saves session.md by default; /end nosave honors the browser's
+      // "Just end" (and any host who typed it) so nothing is written to disk.
+      return { name, save: (parts[1] ?? '').toLowerCase() !== 'nosave' };
     default:
-      // pause | resume | recap | end — no arguments
+      // pause | resume | recap — no arguments
       return { name };
   }
 }
