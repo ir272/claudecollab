@@ -62,8 +62,15 @@ test('parse handles the argless commands', () => {
   assert.deepEqual(parse('/pause'), { name: 'pause' });
   assert.deepEqual(parse('/resume'), { name: 'resume' });
   assert.deepEqual(parse('/recap'), { name: 'recap' });
-  assert.deepEqual(parse('/end'), { name: 'end' });
-  assert.deepEqual(parse('  /END  '), { name: 'end' }, 'trimmed + case-insensitive');
+  assert.deepEqual(parse('/end'), { name: 'end', save: true });
+  assert.deepEqual(parse('  /END  '), { name: 'end', save: true }, 'trimmed + case-insensitive');
+});
+
+test('parse /end save and /end nosave', () => {
+  assert.deepEqual(parse('/end save'), { name: 'end', save: true });
+  assert.deepEqual(parse('/end nosave'), { name: 'end', save: false });
+  assert.deepEqual(parse('/end skip'), { name: 'end', save: false });
+  assert.equal(parse('/end maybe').error, 'usage: /end [save|nosave]');
 });
 
 // ── permitted (spec input table) ────────────────────────────────────────────────

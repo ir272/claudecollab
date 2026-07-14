@@ -43,6 +43,11 @@ export function stripAnsi(str) {
   return String(str).replace(ANSI_RE, '');
 }
 
+/** Plain text safe for join cards, session.md, and logs — no ANSI or other controls. */
+export function sanitizePlainText(str) {
+  return stripAnsi(String(str)).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+}
+
 const inRanges = (cp, ranges) => {
   for (const [lo, hi] of ranges) if (cp >= lo && cp <= hi) return true;
   return false;

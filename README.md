@@ -46,7 +46,7 @@ Want an extra guardrail? Start with `collab --room-password <pw>`. Then friends 
 
 ## How it works
 
-- Everyone who can type gets their own little box at the bottom to write in. Type there and press Enter to send. Your box stays open, so you can keep going. If Claude is busy, your message will get queued.
+- Everyone who can type gets their own little box at the bottom to write in. Type there and press Enter to send. Your box stays open, so you can keep going. If Claude is busy, your message will get queued. Each box keeps your prompts and Claude's replies, so everyone can see who typed what.
 - Want to write a message *together* with someone? Click **+ draft** to open a shared box you both type in.
 - To talk to Claude directly (to approve y/n questions, answer questions, etc) click Claude's CLI text line.
 - Everyone sees the same screen, and scrolling is shared.

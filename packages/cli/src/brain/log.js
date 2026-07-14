@@ -10,6 +10,7 @@
 // transcript /recap hands to a one-shot `claude -p`.
 
 import fs from 'node:fs';
+import { sanitizePlainText } from '../renderer.js';
 
 export class Log {
   #entries = [];
@@ -25,14 +26,14 @@ export class Log {
 
   /** Record an attributed prompt. */
   prompt(author, text, at = this.#now()) {
-    const e = { kind: 'prompt', author, text: String(text), at };
+    const e = { kind: 'prompt', author, text: sanitizePlainText(text), at };
     this.#entries.push(e);
     return e;
   }
 
   /** Record a room event (join/leave/role/kick/mode/pause). */
   event(text, at = this.#now()) {
-    const e = { kind: 'event', text: String(text), at };
+    const e = { kind: 'event', text: sanitizePlainText(text), at };
     this.#entries.push(e);
     return e;
   }

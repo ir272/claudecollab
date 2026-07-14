@@ -93,3 +93,12 @@ test('write emits session.md to disk', () => {
     } catch {}
   }
 });
+
+test('prompt text is sanitized — pasted terminal escapes never land in the log', () => {
+  const log = new Log();
+  log.prompt('ian', 'hello\x1b[31mred\x1b[0m\x07world');
+  assert.equal(log.prompts()[0].text, 'helloredworld');
+  const md = log.toMarkdown();
+  assert.doesNotMatch(md, /\x1b/);
+  assert.match(md, /helloredworld/);
+});

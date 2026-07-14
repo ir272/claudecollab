@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { paint, statusLine, stringWidth, truncateToWidth, ROLE_GLYPH } from './renderer.js';
+import { paint, statusLine, stringWidth, truncateToWidth, ROLE_GLYPH, sanitizePlainText } from './renderer.js';
 
 // ── ANSI vocabulary the band uses (must match renderer.js) ────────────────────
 const SAVE = '\x1b7';
@@ -34,6 +34,11 @@ test('stringWidth counts plain ASCII one cell each', () => {
 test('stringWidth ignores ANSI escape sequences', () => {
   assert.equal(stringWidth(`${ORANGE}hi${RESET}`), 2);
   assert.equal(stringWidth(`${SAVE}${pos(3)}${CLEAR}x${RESTORE}`), 1);
+});
+
+test('sanitizePlainText strips ANSI and other control bytes', () => {
+  assert.equal(sanitizePlainText('ok\x1b[31mred\x1b[0m\x07'), 'okred');
+  assert.equal(sanitizePlainText('line\nkeep'), 'line\nkeep');
 });
 
 test('stringWidth treats CJK and emoji as two cells', () => {

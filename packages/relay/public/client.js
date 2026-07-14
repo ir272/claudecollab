@@ -1128,18 +1128,15 @@ function main() {
       endConfirm.append(el('span', null, 'Save session.md?'));
       const save = el('button', 'kbtn yes', 'Save & end');
       const skip = el('button', 'kbtn no', 'Just end');
-      // The save choice is resolved by the host CLI's /end confirmation; the browser
-      // fires /end either way (the two-step gate lives here so the host never has to
-      // touch the terminal). Both buttons end the room.
-      save.onclick = () => finishEnd();
-      skip.onclick = () => finishEnd();
+      save.onclick = () => finishEnd(true);
+      skip.onclick = () => finishEnd(false);
       endConfirm.append(save, skip);
     }
   }
-  function finishEnd() {
+  function finishEnd(save) {
     endStep = 0;
     renderEndConfirm();
-    sendCommand('/end');
+    sendCommand(save ? '/end save' : '/end nosave');
   }
 
   // ── render ─────────────────────────────────────────────────────────────────
@@ -1375,10 +1372,11 @@ function main() {
 
   // The host routes a prompter's keys straight to Claude whenever they have no
   // draft box open ("you're at the terminal"). A window input must therefore
-  // GUARANTEE a box exists before its keystrokes land, or the text leaks into
-  // Claude (and is never recorded as that person's turn). After each send the box
-  // is consumed, so we re-arm on the next keystroke. `draftArmed` bridges the state
-  // round-trip so we never spawn a second empty box while the first is in flight.
+  // guarantee a box exists before its keystrokes land, or the text leaks into
+  // Claude (and is never recorded as that person's turn). Solo window boxes are
+  // kept after send (brain empties but retains them), but we still re-arm on the
+  // first keystroke when no box exists yet and while NEW_DRAFT is in flight.
+  // `draftArmed` bridges that round-trip so we never spawn a second empty box.
   let draftArmed = false;
   function myWindowBox(v) {
     const mine = v?.panels.find((p) => p.isSelf);

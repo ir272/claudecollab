@@ -58,6 +58,15 @@ test('the card lists recent attributed prompts and touched files with a +N overf
   assert.match(card, /\+2/);
 });
 
+test('recent prompts in the join card never carry terminal escape bytes', () => {
+  const state = new RoomState({ hostName: 'ian' });
+  const log = new Log();
+  log.prompt('ian', 'fix\x1b[2J\x1b[Hthe navbar');
+  const card = build(state, log, { joinerId: 'host', claudeState: 'idle' });
+  assert.doesNotMatch(card, /\x1b/);
+  assert.match(card, /fixthe navbar/);
+});
+
 test('the card reflects Claude state and the last prompt author', () => {
   const { state, log, now } = fixture();
   const busy = build(state, log, { joinerId: 's', now, claudeState: 'busy' });

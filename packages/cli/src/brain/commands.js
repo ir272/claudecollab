@@ -72,8 +72,17 @@ export function parse(text) {
       }
       return { name, error: QUEUE_USAGE };
     }
+    case 'end': {
+      const flag = (parts[1] ?? '').toLowerCase();
+      if (!flag) return { name, save: true };
+      if (flag === 'save' || flag === 'yes' || flag === 'y') return { name, save: true };
+      if (flag === 'nosave' || flag === 'no-save' || flag === 'skip' || flag === 'no' || flag === 'n') {
+        return { name, save: false };
+      }
+      return { name, error: 'usage: /end [save|nosave]' };
+    }
     default:
-      // pause | resume | recap | end — no arguments
+      // pause | resume | recap — no arguments
       return { name };
   }
 }
