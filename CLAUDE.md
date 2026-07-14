@@ -7,8 +7,15 @@ forwards bytes, guests join from a browser. See README.md for usage/architecture
 
 - Relay live at **https://claudecollab.org** (Fly app `claudeshare`, region dfw;
   claudeshare.fly.dev still answers). Certs: apex + www, Let's Encrypt via fly
-- Host command: `node packages/cli/bin/claude-share.js --relay ssh://claudecollab.org:2222`
-  (ssh door rides the same A record; needs CLAUDE_SHARE_SECRET in the environment)
+- Host command: `node packages/cli/bin/claude-share.js --relay ssh://claudecollab.org:2222 --live`
+  (ssh door rides the same A record; needs CLAUDE_SHARE_SECRET in the environment).
+  LAZY DEFAULT since PR #6 (2026-07-14): without `--live` no relay is dialed and no
+  room exists until go-live — `/collab` (plugin) or `collab go` inside the session,
+  driving the control socket (`CLAUDE_SHARE_CTL`; `collab go|off|status`). The room's
+  invite link is exposed to the wrapped Claude via `CLAUDE_SHARE_ROOM_FILE` (invite
+  only — the host token never reaches file or socket). Plugin lives in `plugin/`
+  (+ root `.claude-plugin/marketplace.json`): `/plugin marketplace add ir272/claudecollab`
+  → `/plugin install collab@claudecollab`.
 - Relay ssh fingerprint (pin/verify): `SHA256:K2JkcwxqpWo5F+CP5q5Ke7RGTZYgjJ7tE/ajEajxdxY`
 - **Exactly ONE machine, always** (`fly scale count 1`) — rooms live in the relay
   process's memory; Fly auto-adds a second machine on fresh deploys, scale it back
