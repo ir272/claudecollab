@@ -200,7 +200,7 @@ function bootHost(t) {
     let exited = false;
     const cli = ptySpawn(
       process.execPath,
-      [cliEntry, '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'prompter'],
+      [cliEntry, '--live', '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'prompter'],
       {
         name: 'xterm-256color',
         cols: 200,

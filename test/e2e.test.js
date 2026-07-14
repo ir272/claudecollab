@@ -253,7 +253,7 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   const exitWaiters = [];
   const cli = ptySpawn(
     process.execPath,
-    [cliEntry, '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'viewer'],
+    [cliEntry, '--live', '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'viewer'],
     {
       name: 'xterm-256color',
       cols: 200,
@@ -437,7 +437,7 @@ test('e2e: the wrapped Claude gets the live room file (invite only, no host toke
   const exitWaiters = [];
   const cli = ptySpawn(
     process.execPath,
-    [cliEntry, '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'viewer'],
+    [cliEntry, '--live', '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'viewer'],
     {
       name: 'xterm-256color',
       cols: 200,
@@ -494,4 +494,61 @@ test('e2e: the wrapped Claude gets the live room file (invite only, no host toke
   cli.kill('SIGTERM');
   await waitExit();
   assert.ok(!existsSync(roomFile), 'the room file is gone once the session ends');
+});
+
+test('e2e: lazy start — no --live dials no relay, creates no room, paints no band; --live restores it', { timeout: 120000 }, async (t) => {
+  // The status-line color: NOTHING but the band ever emits it, so its presence in the
+  // host's stdout is a precise "the band painted" signal (renderer.js ORANGE).
+  const ORANGE = '\x1b[38;5;214m';
+
+  const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey(), hostName: 'ian' });
+  t.after(() => relay.close());
+  const { port, webPort } = relay;
+
+  // Isolate the CLI's filesystem side effects (same shape as the other e2e tests).
+  const workDir = mkdtempSync(join(tmpdir(), 'cs-lazy-work-'));
+  const homeDir = mkdtempSync(join(tmpdir(), 'cs-lazy-home-'));
+  const binDir = mkdtempSync(join(tmpdir(), 'cs-lazy-bin-'));
+  t.after(() => {
+    for (const d of [workDir, homeDir, binDir]) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {}
+    }
+  });
+  const shim = join(binDir, 'claude');
+  writeFileSync(shim, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeClaude)} "$@"\n`, { mode: 0o755 });
+  const childEnv = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' };
+
+  const bootHost = (extraArgs) => {
+    const sink = makeSink();
+    const cli = ptySpawn(
+      process.execPath,
+      [cliEntry, ...extraArgs, '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'viewer'],
+      { name: 'xterm-256color', cols: 200, rows: 50, cwd: workDir, env: childEnv },
+    );
+    cli.onData((d) => sink.feed(d));
+    t.after(() => {
+      try {
+        cli.kill();
+      } catch {}
+    });
+    return { cli, sink };
+  };
+
+  // ── lazy host: NO --live → pixel-identical to plain claude ──────────────────
+  const lazy = bootHost([]); // default = lazy
+  await lazy.sink.waitFor('fake-claude ready', 60000); // the wrapped child booted and painted
+  await delay(1500); // ample time to have dialed the relay + created a room, had it been eager
+  assert.equal(relay.roomCount(), 0, 'a lazy host dials no relay and creates no room');
+  assert.ok(!lazy.sink.get().includes(ORANGE), 'pre-live paints ZERO band rows (no status line)');
+  assert.ok(!lazy.sink.get().includes('room ready'), 'pre-live never announces a room');
+
+  // ── --live host on the SAME relay → the old room-at-startup behavior ────────
+  const live = bootHost(['--live']);
+  await live.sink.waitFor('room ready', 60000); // dialed, got a room, painted the ready toast
+  assert.ok(relay.roomCount() >= 1, '--live creates a room at startup');
+  assert.ok(live.sink.get().includes(ORANGE), '--live paints the status band');
+  // The lazy host STILL has no room and no band — going live is per-process.
+  assert.ok(!lazy.sink.get().includes(ORANGE), 'the lazy host stays band-free while another host goes live');
 });

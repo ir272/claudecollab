@@ -50,6 +50,11 @@ import { foldKnock } from '../src/brain/knocks.js';
 function parseArgs(argv) {
   const opts = {
     relay: true,
+    // Lazy by default (spec phase 5a): a fresh `collab` starts pixel-identical to
+    // plain claude and does NOT dial the relay until go-live (`collab go`). --live
+    // restores the old behavior — dial at startup — for rigs, tests, and anyone who
+    // wants a room immediately. --no-relay still means never share.
+    live: false,
     // Default to the community relay so a fresh `collab` needs zero setup; dev
     // rigs and tests always pass --relay explicitly (ssh://127.0.0.1:2222).
     relayUrl: 'ssh://claudecollab.org:2222',
@@ -69,6 +74,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--no-relay') opts.relay = false;
+    else if (a === '--live') opts.live = true;
     else if (a === '--relay') opts.relayUrl = argv[++i] ?? opts.relayUrl;
     else if (a === '--no-hooks') opts.hooks = false;
     else if (a === '--web-port') opts.webPort = Math.max(1, Number(argv[++i]) || opts.webPort);
@@ -125,6 +131,14 @@ async function main() {
   // row. Claude gets every other row; the child PTY is resized to rows-1 each repaint.
   const BAND_ROWS = 1;
   const multiplayer = opts.relay; // the guest composer/gate + mirror are active only when sharing
+  // Lazy sharing (spec phase 5a): pre-live, the wrapper is pixel-identical to plain
+  // claude — the relay is not dialed and the band paints ZERO rows, so the child owns
+  // every terminal row. wantLive flips exactly once, at go-live (--live at startup, or
+  // `collab go` over the control socket). isLive() gates every sharing-shaped behavior
+  // (band height, the shared-size clamp); bandRows() is the one height source.
+  let wantLive = opts.live;
+  const isLive = () => multiplayer && wantLive;
+  const bandRows = () => (isLive() ? BAND_ROWS : 0);
   // The host's browser tab authenticates with this token: it knocks with fingerprint
   // `webhost:<token>:<seat>`, and the brain auto-admits it as host. The token goes in
   // the room URL we print/copy; the SEAT does not — the browser mints it locally, so
@@ -233,7 +247,7 @@ async function main() {
     // CLAUDE_SHARE_ROOM_FILE is set for EVERY spawn, solo included: its presence
     // tells the child it's running under collab; the file at that path appears only
     // once a room is live (phase 5's skill relies on that live-vs-not distinction).
-    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: BAND_ROWS, env: { CLAUDE_SHARE_ROOM_FILE: roomFile } });
+    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: bandRows(), env: { CLAUDE_SHARE_ROOM_FILE: roomFile } });
   } catch (err) {
     process.stderr.write(
       `collab: could not start "${opts.cmd}": ${err.message}\n` +
@@ -288,7 +302,9 @@ async function main() {
   // the mirror letterboxed until the first guest join reshaped it.
   // Solo with no tab there is no shared view, so we use the host's own terminal.
   const viewSize = () => {
-    if (!multiplayer) return { cols: stdout.columns || 80, rows: stdout.rows || 24 };
+    // Pre-live (and solo) the child owns the real terminal exactly — no floor clamp,
+    // no resize theft. The shared-size clamp only governs once we are actually live.
+    if (!isLive()) return { cols: stdout.columns || 80, rows: stdout.rows || 24 };
     let { cols, rows } = state.clamp();
     for (const s of hostTabSizes.values()) {
       cols = Math.min(cols, s.cols);
@@ -383,7 +399,7 @@ async function main() {
   // Claude's region is resized to rows-1 so the line can never overlap its output.
   const repaintBand = () => {
     const { cols, rows } = viewSize();
-    const band = BAND_ROWS;
+    const band = bandRows(); // 0 pre-live (paint() no-ops, child keeps every row), 1 once live
 
     // Keep Claude's region to exactly the rows the band does not occupy, at the
     // shared width — resize the child only when that actually changes.
@@ -1278,7 +1294,19 @@ async function main() {
     reconnectTimer.unref?.();
   }
 
-  if (opts.relay) openRelay();
+  // Go live on demand: dial the relay and flip wantLive so the band appears and the
+  // child shrinks by one row (via repaintBand's resize path). Idempotent — the guard
+  // makes it callable exactly once, whether from --live at startup or `collab go`
+  // mid-session over the control socket. --no-relay can never go live.
+  let goLiveStarted = false;
+  function goLive() {
+    if (goLiveStarted || exited || !opts.relay) return;
+    goLiveStarted = true;
+    wantLive = true;
+    openRelay();
+    repaintBand(); // band appears; the child is resized to rows-1
+  }
+  if (opts.relay && opts.live) goLive();
 
   // ── hook events → brain ───────────────────────────────────────────────────────
   if (hooks) {
