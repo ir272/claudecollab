@@ -104,6 +104,10 @@ export function startRelay(opts = {}) {
     // ungated on purpose: it is already bound to the creating host's key
     // fingerprint, and must keep working mid-session if the secret rotates.
     roomSecret,
+    // Trust Fly's `Fly-Client-IP` header for per-IP knock limits. Only safe when
+    // the relay genuinely sits behind Fly's proxy (a direct-exposed relay could be
+    // spoofed by a client-sent header), so it is off unless the operator opts in.
+    trustProxy = false,
     registry: registryOpts = {},
   } = opts;
 
@@ -639,7 +643,7 @@ export function startRelay(opts = {}) {
       // The browser door shares this relay's live rooms + registry, so web
       // participants are real room members subject to the same knock/ban/cap.
       if (webPort == null) return done(null);
-      startWebDoor({ port: webPort, host, live, registry, knockTimeoutMs, onGuestGone, safeWrite }).then(done, (err) => {
+      startWebDoor({ port: webPort, host, live, registry, knockTimeoutMs, onGuestGone, safeWrite, trustProxy }).then(done, (err) => {
         try {
           close();
         } catch {

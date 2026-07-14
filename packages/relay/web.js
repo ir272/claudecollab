@@ -98,6 +98,24 @@ function wsClose(ws) {
 const sendErr = (ws, reason) => wsSendText(ws, JSON.stringify({ t: 'error', reason }));
 
 /**
+ * The client IP the knock limiter keys on. Behind Fly's proxy every connection's
+ * `req.socket.remoteAddress` is the proxy, so all strangers share ONE lockout
+ * bucket. When the operator declares the deploy sits behind Fly
+ * (CLAUDE_SHARE_TRUST_PROXY=1 → trustProxy), honor the `Fly-Client-IP` header;
+ * otherwise ignore it (a direct-exposed relay must not trust a client-set header).
+ * @param {import('node:http').IncomingMessage} req
+ * @param {boolean} trustProxy
+ * @returns {string}
+ */
+export function clientIp(req, trustProxy) {
+  if (trustProxy) {
+    const h = req.headers['fly-client-ip'];
+    if (typeof h === 'string' && h.length) return h;
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+
+/**
  * Start the HTTP + WebSocket web door. Shares the live routing state and the
  * registry with the ssh relay so web participants are real room members.
  *
@@ -109,10 +127,11 @@ const sendErr = (ws, reason) => wsSendText(ws, JSON.stringify({ t: 'error', reas
  * @param {number} ctx.knockTimeoutMs       waiting-screen timeout
  * @param {(rec:object)=>void} ctx.onGuestGone  shared guest-teardown (frees seat, LEFTs the host)
  * @param {(stream:any,data:any)=>void} ctx.safeWrite  shared fail-soft writer (to the host stream)
+ * @param {boolean} [ctx.trustProxy]        honor Fly-Client-IP for per-IP knock limits (Fly deploys only)
  * @returns {Promise<{close():void, port:number, address:object}>}
  */
 export function startWebDoor(ctx) {
-  const { port = 0, host = '127.0.0.1', live, registry, knockTimeoutMs, onGuestGone, safeWrite } = ctx;
+  const { port = 0, host = '127.0.0.1', live, registry, knockTimeoutMs, onGuestGone, safeWrite, trustProxy = false } = ctx;
 
   // ---- HTTP: index (SPA-style, room code in the path) + vendored xterm assets
 
@@ -218,7 +237,7 @@ export function startWebDoor(ctx) {
     // and the host writes it verbatim to its terminal / log / session.md and mirrors
     // it to every ssh guest — raw ESC/OSC/BEL bytes here would be escape injection.
     const name = sanitizeName(q.get('name'), isHostTab ? 'host' : 'guest');
-    const ip = req.socket.remoteAddress || 'unknown';
+    const ip = clientIp(req, trustProxy);
 
     // Same gate as the ssh door (spec: respect bans/lockouts/caps identically).
     const room = code ? live.get(code) : null;

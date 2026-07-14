@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import ssh2 from 'ssh2';
 import { WebSocket } from 'ws';
 import { startRelay } from './server.js';
+import { clientIp } from './web.js';
 import { encode, Decoder, TYPES } from '../shared/protocol.js';
 
 const { Client, utils } = ssh2;
@@ -115,6 +116,13 @@ function connectWeb(webPort, query) {
 
 const b64 = (s) => Buffer.from(s).toString('base64');
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
+
+test('clientIp honors Fly-Client-IP only when trusted', () => {
+  const req = { headers: { 'fly-client-ip': '203.0.113.9' }, socket: { remoteAddress: '172.16.0.1' } };
+  assert.equal(clientIp(req, true), '203.0.113.9');
+  assert.equal(clientIp(req, false), '172.16.0.1');
+  assert.equal(clientIp({ headers: {}, socket: { remoteAddress: '172.16.0.1' } }, true), '172.16.0.1');
+});
 
 test('web door: HTTP serves the client + xterm assets, path-traversal safe', async (t) => {
   const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
