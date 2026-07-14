@@ -28,6 +28,7 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
+import { writeRoomFile, clearRoomFile } from '../src/room-file.js';
 import { paint, ROLE_GLYPH } from '../src/renderer.js';
 import { ScreenSnapshot } from '../src/screen-snapshot.js';
 import { installHooks, listenHooks } from '../src/hooks.js';
@@ -130,6 +131,11 @@ async function main() {
   // possessing the (leak-prone) URL is not enough to take the host seat.
   const hostToken = randomBytes(16).toString('hex');
   const HOST_FP_PREFIX = `webhost:${hostToken}`;
+  // The room file the wrapped Claude reads to learn its own invite link. Its PATH is
+  // ALWAYS exported (CLAUDE_SHARE_ROOM_FILE, below) so "running under collab" is
+  // detectable; the file only EXISTS while a room is live (written on grant/reclaim,
+  // removed on gone/give-up/exit). Whitelisted: the host token never reaches it.
+  const roomFile = path.join(os.tmpdir(), `claude-share-room-${process.pid}.json`);
   // The seat this session is bound to: the first host browser's seat secret claims
   // it; later browsers presenting the token with a different/absent seat are refused
   // (leaked-link defense). Reset by a host-terminal Ctrl-G handoff (see below).
@@ -224,7 +230,10 @@ async function main() {
 
   let pty;
   try {
-    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: BAND_ROWS });
+    // CLAUDE_SHARE_ROOM_FILE is set for EVERY spawn, solo included: its presence
+    // tells the child it's running under collab; the file at that path appears only
+    // once a room is live (phase 5's skill relies on that live-vs-not distinction).
+    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: BAND_ROWS, env: { CLAUDE_SHARE_ROOM_FILE: roomFile } });
   } catch (err) {
     process.stderr.write(
       `collab: could not start "${opts.cmd}": ${err.message}\n` +
@@ -1051,6 +1060,10 @@ async function main() {
       state.setRoom(code);
       currentUrl = hostRoomUrl(code); // the host's own tab URL lives in the status line
       inviteUrlStr = inviteRoomUrl(code); // the token-free variant the mirror shows guests
+      // Expose the live room's INVITE link to the wrapped Claude (whitelist drops the
+      // token-bearing host URL). Runs on create AND reclaim — a reclaim may carry a
+      // fresh publicBase, so the file is always rewritten from the current values.
+      writeRoomFile(roomFile, { room: code, inviteUrl: inviteUrlStr, webUrl: publicBase ?? undefined });
       if (reclaimed) {
         showToast('reconnected — room reclaimed', 6000);
         return;
@@ -1066,6 +1079,7 @@ async function main() {
       state.setRoom(null);
       currentUrl = null;
       inviteUrlStr = null;
+      clearRoomFile(roomFile); // the room is gone — the child must not read a dead link
       showToast('the room expired while disconnected — continuing solo', 8000);
       repaintBand();
     });
@@ -1254,6 +1268,7 @@ async function main() {
     if (exited) return;
     if (!state.room) return showToast('relay disconnected — running solo', 8000);
     if (reconnectAttempts >= MAX_RECONNECT) {
+      clearRoomFile(roomFile); // gave up reclaiming — the room is no longer reachable
       return showToast('could not reconnect to the relay — continuing solo', 8000);
     }
     reconnectAttempts++;
@@ -1347,6 +1362,7 @@ async function main() {
         } catch {}
       }
     }
+    clearRoomFile(roomFile); // the session is over — the link is dead (covers /end, exit, signals)
     stdout.write(TERM_RESTORE + '\r\n[claude-share exited]\r\n');
     process.exit(code ?? 0);
   };

@@ -26,7 +26,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import ssh2 from 'ssh2';
 import * as ptyNs from 'node-pty';
@@ -411,4 +411,87 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   assert.match(md, /set a to viewer/); // role change recorded
   assert.match(md, /a was kicked/); // moderation recorded
   assert.match(md, /src\/app\.js/); // PostToolUse file surfaced in "Files touched"
+});
+
+test('e2e: the wrapped Claude gets the live room file (invite only, no host token), gone after exit', { timeout: 120000 }, async (t) => {
+  // ── the relay + isolated CLI fs side effects (same boot shape as above) ──────
+  const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey(), hostName: 'ian' });
+  t.after(() => relay.close());
+  const { port, webPort } = relay;
+
+  const workDir = mkdtempSync(join(tmpdir(), 'cs-rf-work-'));
+  const homeDir = mkdtempSync(join(tmpdir(), 'cs-rf-home-'));
+  const binDir = mkdtempSync(join(tmpdir(), 'cs-rf-bin-'));
+  t.after(() => {
+    for (const d of [workDir, homeDir, binDir]) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {}
+    }
+  });
+  const shim = join(binDir, 'claude');
+  writeFileSync(shim, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeClaude)} "$@"\n`, { mode: 0o755 });
+
+  const host = makeSink();
+  let exited = false;
+  const exitWaiters = [];
+  const cli = ptySpawn(
+    process.execPath,
+    [cliEntry, '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'viewer'],
+    {
+      name: 'xterm-256color',
+      cols: 200,
+      rows: 50,
+      cwd: workDir,
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' },
+    },
+  );
+  cli.onData((d) => host.feed(d));
+  cli.onExit(({ exitCode }) => {
+    exited = true;
+    exitWaiters.splice(0).forEach((r) => r(exitCode ?? 0));
+  });
+  const waitExit = (ms = DEFAULT_TIMEOUT) =>
+    exited
+      ? Promise.resolve()
+      : new Promise((res, rej) => {
+          const timer = setTimeout(() => rej(new Error('CLI did not exit in time')), ms);
+          exitWaiters.push((c) => {
+            clearTimeout(timer);
+            res(c);
+          });
+        });
+  t.after(() => {
+    try {
+      if (!exited) cli.kill();
+    } catch {}
+  });
+
+  // ── the room grant → the room file is written by the wrapper ─────────────────
+  await host.waitFor('room ready', 60000);
+  const m = host.get().match(/http:\/\/127\.0\.0\.1:(\d+)\/([a-z]+-[a-z]+)\?host=([0-9a-f]+)/);
+  assert.ok(m, 'the status line carries the host-tab URL with a host token');
+  const code = m[2];
+  const token = m[3];
+
+  // The wrapper names the file by ITS pid (os.tmpdir()/claude-share-room-<pid>.json);
+  // the child reads it via CLAUDE_SHARE_ROOM_FILE. Poll until it appears (the write is
+  // synchronous inside onRoom, but give the paint→sink hop a moment either way).
+  const roomFile = join(tmpdir(), `claude-share-room-${cli.pid}.json`);
+  for (let i = 0; i < 100 && !existsSync(roomFile); i++) await delay(50);
+  assert.ok(existsSync(roomFile), 'the room file exists while the room is live');
+
+  const raw = readFileSync(roomFile, 'utf8');
+  const info = JSON.parse(raw);
+  assert.equal(info.room, code, 'the room file carries the room code');
+  assert.ok(info.inviteUrl && info.inviteUrl.includes(code), 'the room file carries the invite URL');
+  // HARD RULE: the token-bearing host URL must NEVER reach the child-readable file.
+  assert.ok(!raw.includes('host='), 'no host= query reaches the room file');
+  assert.ok(!raw.includes(token), 'the host token never reaches the room file');
+  assert.ok(!('hostUrl' in info) && !('token' in info), 'only whitelisted fields are present');
+
+  // ── end the host (SIGTERM) → the file is removed ─────────────────────────────
+  cli.kill('SIGTERM');
+  await waitExit();
+  assert.ok(!existsSync(roomFile), 'the room file is gone once the session ends');
 });
