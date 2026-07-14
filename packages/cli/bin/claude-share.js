@@ -39,6 +39,8 @@ import { RoomState, HOST_ID, atLeast, FLOOR_COLS, FLOOR_ROWS } from '../src/brai
 import { Queue } from '../src/brain/queue.js';
 import { Log } from '../src/brain/log.js';
 import { Drafts } from '../src/brain/drafts.js';
+import { History } from '../src/brain/history.js';
+import { extractLatestResponse } from '../src/brain/transcript.js';
 import { dispatch, classifySend, sendAllowed } from '../src/brain/gate.js';
 import { parse as parseCommand, permitted as commandPermitted, resolveMention } from '../src/brain/commands.js';
 import { build as buildCard, recapCard } from '../src/brain/card.js';
@@ -163,6 +165,7 @@ async function main() {
   const queue = new Queue();
   const log = new Log();
   const drafts = new Drafts();
+  const history = new History(); // per-turn who-typed-what + Claude's response
   const toasted = new Set(); // userIds already shown the viewer toast
   const knockInfo = new Map(); // id -> {name, fp} captured at knock time
   const pointers = new Map(); // userId -> {x, y} normalized 0..1 (browser cursors)
@@ -310,6 +313,7 @@ async function main() {
     participants: state.list().map((p) => ({ id: p.id, name: p.name, role: p.role, color: p.color })),
     drafts: drafts.snapshot(),
     queue: queue.items.map((it, i) => ({ n: i + 1, author: it.author, text: it.text })),
+    history: history.snapshot(),
     claudeState: claude.state,
     paused: state.paused,
     pointers: Object.fromEntries(
@@ -508,6 +512,32 @@ async function main() {
     t.unref?.();
   };
 
+  // Claude's response to the turn that just finished, read from the session
+  // transcript the Stop hook hands us (`transcript_path`). We read only the tail —
+  // the latest turn is at the end — so a long session's transcript stays cheap, and
+  // a truncated leading line is tolerated by the extractor. Any failure → '' (the
+  // window still shows the prompt; the response just stays blank).
+  const RESPONSE_TAIL_BYTES = 256 * 1024;
+  const captureResponse = (payload) => {
+    const file = payload && typeof payload.transcript_path === 'string' ? payload.transcript_path : null;
+    if (!file) return '';
+    try {
+      const fd = fs.openSync(file, 'r');
+      try {
+        const { size } = fs.fstatSync(fd);
+        const start = Math.max(0, size - RESPONSE_TAIL_BYTES);
+        const len = size - start;
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, start);
+        return extractLatestResponse(buf.toString('utf8'));
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return '';
+    }
+  };
+
   const pump = () => {
     if (Date.now() < ptyLockUntil) {
       const retry = setTimeout(pump, 160);
@@ -529,6 +559,7 @@ async function main() {
     }, 120);
     enter.unref?.();
     claude.state = 'busy'; // optimistic; the UserPromptSubmit hook confirms
+    history.start(item.author, item.text); // open a turn; Stop closes it with the response
     armSubmitWatch();
     repaintBand();
   };
@@ -1235,11 +1266,14 @@ async function main() {
       armed = false;
       repaintBand();
     });
-    hooks.on('idle', () => {
+    hooks.on('idle', (payload) => {
       lastHookAt = Date.now();
       clearSubmitWatch();
       claude.state = 'idle';
       armed = false;
+      // Close the open turn with Claude's response, read cleanly from the session
+      // transcript the Stop hook points us at (never scraped from the TUI).
+      if (history.open) history.finish(captureResponse(payload));
       pump();
       repaintBand();
     });

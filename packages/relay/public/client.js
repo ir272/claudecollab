@@ -346,6 +346,8 @@ export function overlayView(state, selfId) {
     if (b) claimed.add(b.id);
     return b || null;
   };
+  // Turn history (who typed what + Claude's response), attributed by author.
+  const allTurns = Array.isArray(s.history) ? s.history : [];
   const panels = prompters.map((p) => {
     const box = windowBoxFor(p.id);
     return {
@@ -359,6 +361,14 @@ export function overlayView(state, selfId) {
       text: box?.text ?? '',
       typing: !!(box && (box.text || box.carets.some((c) => c.id === p.id))),
       pending: queue.filter((q) => q.author === p.id).map((q) => ({ n: q.n, text: q.text })),
+      turns: allTurns
+        .filter((t) => t.author === p.id)
+        .map((t) => ({
+          id: t.id,
+          prompt: t.prompt ?? '',
+          response: t.response ?? '',
+          running: !!t.running,
+        })),
     };
   });
   const floatingDrafts = drafts.filter((d) => !claimed.has(d.id));
@@ -787,6 +797,19 @@ function main() {
     // as a dead mouse report (stdin is disabled). Capture it before xterm and mail
     // it to the brain, which types the real report into the pty.
     stage.addEventListener('wheel', onStageWheel, { passive: false, capture: true });
+    // Copy Claude's output: xterm owns selection inside the mirror (it suppresses
+    // the native DOM selection there), so on Cmd/Ctrl+C with no page-text selected,
+    // put xterm's selection on the clipboard. A real DOM selection — a prompt or
+    // response highlighted in a window box — copies natively and is left alone.
+    document.addEventListener('copy', (e) => {
+      if (phase !== 'live' || !term) return;
+      const domSel = window.getSelection();
+      if (domSel && !domSel.isCollapsed && String(domSel).trim()) return;
+      if (term.hasSelection?.()) {
+        e.clipboardData?.setData('text/plain', term.getSelection());
+        e.preventDefault();
+      }
+    });
   }
 
   let wheelAcc = 0;
@@ -1229,9 +1252,11 @@ function main() {
 
   // ── per-user windows: everyone's own space to type a prompt SEPARATELY ────────
   // The panel DOM is rebuilt only when the roster changes; the dynamic bits (draft
-  // text, status, sent prompts) update in place so a focused input never loses focus.
+  // text, status, history) update in place so a focused input never loses focus.
   let panelsKey = '';
-  const panelEls = new Map(); // participant id -> { input, body, status }
+  const panelEls = new Map(); // participant id -> { input, body, status, bodyKey }
+  const expandedTurns = new Set(); // turn ids the viewer expanded to full response
+  const RESP_LIMIT = 280; // chars of a response shown before "show more"
   function renderPanels(v) {
     const key = v.panels.map((p) => `${p.id}:${p.name}:${p.color}:${p.canType}`).join('|');
     if (key !== panelsKey) {
@@ -1259,14 +1284,16 @@ function main() {
         wrap.append(input);
         win.append(head, body, wrap);
         panelsGrid.append(win);
-        panelEls.set(p.id, { input, body, status });
+        panelEls.set(p.id, { input, body, status, bodyKey: null });
       }
     }
     for (const p of v.panels) {
       const e = panelEls.get(p.id);
       if (!e) continue;
-      e.status.textContent = p.typing ? 'typing…' : 'idle';
+      const running = p.turns.some((t) => t.running);
+      e.status.textContent = p.typing ? 'typing…' : running ? 'waiting…' : 'idle';
       e.status.classList.toggle('typing', p.typing);
+      e.status.classList.toggle('waiting', !p.typing && running);
       // mirror the live draft into the input — the brain is the authority, so we
       // never echo locally; setting value keeps every tab showing the same text.
       if (e.input.value !== p.text) {
@@ -1281,41 +1308,110 @@ function main() {
           }
         }
       }
-      e.body.innerHTML = '';
-      if (p.pending.length === 0) {
-        e.body.append(
-          el('div', 'uw-empty', p.isSelf ? 'Your sent prompts show here. Enter to send.' : 'No prompts yet.'),
-        );
-      } else {
-        for (const q of p.pending) {
-          const line = el('div', 'uw-line sent');
-          line.append(el('span', 'uw-n', '#' + q.n), document.createTextNode('> ' + q.text));
-          e.body.append(line);
-        }
-      }
+      renderPanelBody(e, p);
     }
+  }
+
+  // Render one window's body: attributed history (prompt + Claude's response, with
+  // a show-more toggle) then any still-queued prompts. Diff-guarded so an unrelated
+  // state frame (a pointer move) never rebuilds it mid-selection and kills a copy.
+  function renderPanelBody(e, p) {
+    const expandedHere = p.turns.filter((t) => expandedTurns.has(t.id)).map((t) => t.id);
+    const key = JSON.stringify({ turns: p.turns, pending: p.pending, expandedHere, self: p.isSelf });
+    if (key === e.bodyKey) return;
+    // Don't clobber an active selection inside this body (the viewer is copying).
+    const sel = window.getSelection();
+    if (e.bodyKey !== null && sel && !sel.isCollapsed && e.body.contains(sel.anchorNode)) return;
+    // "stick to bottom" only when already near the bottom before the rebuild.
+    const stick = e.bodyKey === null || e.body.scrollHeight - e.body.scrollTop - e.body.clientHeight < 40;
+    e.bodyKey = key;
+    e.body.innerHTML = '';
+
+    if (p.turns.length === 0 && p.pending.length === 0) {
+      e.body.append(
+        el('div', 'uw-empty', p.isSelf ? 'Your prompts and Claude’s replies show here. Enter to send.' : 'No prompts yet.'),
+      );
+      return;
+    }
+
+    for (const t of p.turns) {
+      const turn = el('div', 'uw-turn');
+      const promptLine = el('div', 'uw-line uw-prompt');
+      promptLine.append(el('span', 'uw-caret', '›'), document.createTextNode(' ' + t.prompt));
+      turn.append(promptLine);
+
+      if (t.running) {
+        turn.append(el('div', 'uw-resp running', 'Claude is working…'));
+      } else if (t.response) {
+        const resp = el('div', 'uw-resp');
+        const long = t.response.length > RESP_LIMIT;
+        const expanded = expandedTurns.has(t.id);
+        const shown = long && !expanded ? t.response.slice(0, RESP_LIMIT).trimEnd() + '…' : t.response;
+        resp.append(document.createTextNode(shown));
+        if (long) {
+          const more = el('button', 'uw-more', expanded ? 'show less' : 'show more');
+          more.type = 'button';
+          more.onclick = () => {
+            if (expandedTurns.has(t.id)) expandedTurns.delete(t.id);
+            else expandedTurns.add(t.id);
+            render();
+          };
+          resp.append(more);
+        }
+        turn.append(resp);
+      }
+      e.body.append(turn);
+    }
+
+    for (const q of p.pending) {
+      const line = el('div', 'uw-line uw-queued');
+      line.append(el('span', 'uw-n', '#' + q.n), document.createTextNode(' ' + q.text));
+      line.append(el('span', 'uw-badge', 'queued'));
+      e.body.append(line);
+    }
+
+    if (stick) e.body.scrollTop = e.body.scrollHeight;
+  }
+
+  // The host routes a prompter's keys straight to Claude whenever they have no
+  // draft box open ("you're at the terminal"). A window input must therefore
+  // GUARANTEE a box exists before its keystrokes land, or the text leaks into
+  // Claude (and is never recorded as that person's turn). After each send the box
+  // is consumed, so we re-arm on the next keystroke. `draftArmed` bridges the state
+  // round-trip so we never spawn a second empty box while the first is in flight.
+  let draftArmed = false;
+  function myWindowBox(v) {
+    const mine = v?.panels.find((p) => p.isSelf);
+    if (!mine?.boxId) return null;
+    return v.drafts.find((d) => d.id === mine.boxId && !d.place) || null;
+  }
+  function ensureMyDraft() {
+    const v = lastState ? overlayView(lastState, selfId) : null;
+    const box = myWindowBox(v);
+    if (box) {
+      draftArmed = false;
+      // keep my caret in my own window box (not a floating box I also co-wrote)
+      if (!box.carets.some((c) => c.self)) {
+        sendMsg({ t: 'ui', action: { kind: 'caret', id: box.id, offset: box.text.length } });
+      }
+      return;
+    }
+    if (draftArmed) return; // already asked for one; it just hasn't echoed back yet
+    sendKey(NEW_DRAFT_BYTES);
+    draftArmed = true;
   }
 
   // Wire a self window input: keys route to the brain (which owns the draft), so the
   // input is a controlled mirror of my private box. Enter sends it into the queue.
   function wirePanelInput(input) {
-    input.addEventListener('focus', () => {
-      const v = lastState ? overlayView(lastState, selfId) : null;
-      const mine = v?.panels.find((p) => p.isSelf);
-      if (!mine) return;
-      if (mine.boxId) {
-        // make sure my caret sits in my window box (not a floating box I co-wrote)
-        const box = v.drafts.find((d) => d.id === mine.boxId);
-        const caretHere = box?.carets.some((c) => c.self);
-        if (!caretHere) sendMsg({ t: 'ui', action: { kind: 'caret', id: mine.boxId, offset: mine.text.length } });
-      } else {
-        sendKey(NEW_DRAFT_BYTES); // no private draft yet → start one
-      }
-    });
+    input.addEventListener('focus', () => ensureMyDraft());
     input.addEventListener('keydown', (e) => {
       const bytes = keyToBytes(e); // Enter → send, editing chords, printable chars
       if (bytes != null) {
         e.preventDefault();
+        // Ordered on the wire: the new-draft byte lands before this key, so the key
+        // always composes into my box instead of leaking to Claude.
+        if (e.key !== 'Escape') ensureMyDraft();
         sendKey(bytes);
         return;
       }
@@ -1325,7 +1421,10 @@ function main() {
     input.addEventListener('paste', (e) => {
       e.preventDefault();
       const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
-      if (text) sendKey(pasteBytes(text));
+      if (text) {
+        ensureMyDraft();
+        sendKey(pasteBytes(text));
+      }
     });
     // never let a local echo diverge from the brain's authoritative text
     input.addEventListener('input', () => {

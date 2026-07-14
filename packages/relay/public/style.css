@@ -628,6 +628,9 @@ body {
 .uw-status.typing {
   color: var(--c, var(--amber));
 }
+.uw-status.waiting {
+  color: var(--blue);
+}
 .uw-body {
   flex: 1;
   min-height: 0;
@@ -637,6 +640,9 @@ body {
   font-size: 12px;
   line-height: 1.55;
   color: var(--text-dim);
+  /* selectable so prompts + responses can be copied out of the window */
+  user-select: text;
+  -webkit-user-select: text;
 }
 .uw-empty {
   color: var(--text-faint);
@@ -648,12 +654,72 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.uw-line.sent {
-  color: var(--text-dim);
-}
 .uw-line .uw-n {
   color: var(--text-faint);
   margin-right: 6px;
+}
+
+/* one turn: the person's prompt, then Claude's reply beneath it */
+.uw-turn {
+  margin: 0 0 12px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.uw-turn:last-child {
+  border-bottom: none;
+}
+.uw-prompt {
+  color: var(--c, var(--text));
+  font-weight: 600;
+}
+.uw-caret {
+  opacity: 0.7;
+  margin-right: 2px;
+}
+.uw-resp {
+  margin-top: 5px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.uw-resp.running {
+  color: var(--text-faint);
+  font-style: italic;
+  border-left-color: color-mix(in srgb, var(--blue) 50%, transparent);
+}
+.uw-more {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--blue);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.uw-more:hover {
+  color: var(--text);
+}
+.uw-queued {
+  color: var(--text-faint);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.uw-badge {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--amber);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  border-radius: 999px;
+  padding: 1px 6px;
+  margin-left: auto;
 }
 .uw-input-wrap {
   flex: 0 0 auto;
