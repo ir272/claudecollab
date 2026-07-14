@@ -557,6 +557,7 @@ function main() {
     timeout: 'The host did not answer in time. Try again when they are around.',
     denied: 'The host declined your request.',
     closed: 'The connection closed before you were let in — try again.',
+    busy: 'Too many people are waiting to join — try again in a minute.',
     // password gets its own copy in fail(): the message depends on whether we
     // had one to send ("needs a password" vs "wrong password").
     password: 'This room is password-protected.',

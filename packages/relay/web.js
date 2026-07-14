@@ -135,6 +135,8 @@ export function clientIp(req, trustProxy) {
  * @returns {Promise<{close():void, port:number, address:object}>}
  */
 export function startWebDoor(ctx) {
+  // maxPending's fallback mirrors server.js's MAX_PENDING — startRelay always
+  // supplies it; the default only covers a direct startWebDoor caller (tests).
   const { port = 0, host = '127.0.0.1', live, registry, knockTimeoutMs, onGuestGone, safeWrite, trustProxy = false, maxPending = 12 } = ctx;
 
   // ---- HTTP: index (SPA-style, room code in the path) + vendored xterm assets
@@ -287,6 +289,11 @@ export function startWebDoor(ctx) {
     // sends a KNOCK) for a guest that hasn't proven the password yet.
     function proceedToKnock() {
       if (rec.gone) return;
+      // The room may have ended (or its host dropped) while the guest sat at the
+      // password prompt — a pass-phase rec is in neither guests nor pending, so
+      // closeRoom/onHostGone can't reach it. Refuse instead of knocking a dead room.
+      if (live.get(rec.code) !== room) return void (sendErr(ws, 'no-room'), wsClose(ws));
+      if (!room.hostPresent) return void (sendErr(ws, 'host-gone'), wsClose(ws));
       if (rec.knockTimer) {
         clearTimeout(rec.knockTimer); // clear the pass-challenge timer, if any
         rec.knockTimer = null;

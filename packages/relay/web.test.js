@@ -386,3 +386,28 @@ test('web door: room password rides the first WS message, not the URL', async (t
   const hostKnock = await host.next((m) => m.t === TYPES.KNOCK && m.fp === 'webhost:htok');
   assert.ok(hostKnock.id, 'the host tab needs no room password');
 });
+
+test('web door: a room ending mid-password-challenge refuses the late answer', async (t) => {
+  const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  t.after(() => host.client.end());
+  host.send({ t: TYPES.HELLO, want: 'room', pass: 'sesame' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // Guest reaches the password prompt (in neither guests nor pending yet)…
+  const late = connectWeb(relay.webPort, `room=${code}&name=late&token=t-late`);
+  t.after(() => late.ws.close());
+  await late.nextText((m) => m.t === 'pass?');
+
+  // …then the host ends the room while they're typing.
+  host.send({ t: TYPES.END });
+  await new Promise((r) => setTimeout(r, 50)); // let closeRoom run
+
+  // The (correct!) answer must be refused — never knocked into the dead room.
+  late.send({ t: 'pass', pass: 'sesame' });
+  const err = await late.nextText((m) => m.t === 'error');
+  assert.equal(err.reason, 'no-room', 'a late password answer meets a refusal, not a 60s ghost wait');
+  await late.onClose();
+});
