@@ -29,6 +29,7 @@ import { randomBytes } from 'node:crypto';
 import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
 import { stripShimDir } from '../src/shim.js';
+import { shouldRunSetup, runSetup, setupMain } from '../src/setup-actions.js';
 import { startCtl } from '../src/ctl.js';
 import { ctlMain } from '../src/ctl-client.js';
 import { writeRoomFile, clearRoomFile } from '../src/room-file.js';
@@ -71,6 +72,7 @@ function parseArgs(argv) {
     fingerprint: undefined, // explicit relay key pin (SHA256:…); default is TOFU
     roomPassword: undefined, // optional join password guests must present before knocking
     cap: undefined, // optional requested room size (--max-guests); the relay clamps it
+    yes: false, // --yes: skip the first-run setup screen (for scripts / non-interactive)
     childArgs: [],
   };
   const passthrough = [];
@@ -78,6 +80,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--no-relay') opts.relay = false;
     else if (a === '--live') opts.live = true;
+    else if (a === '--yes') opts.yes = true;
     else if (a === '--relay') opts.relayUrl = argv[++i] ?? opts.relayUrl;
     else if (a === '--no-hooks') opts.hooks = false;
     else if (a === '--web-port') opts.webPort = Math.max(1, Number(argv[++i]) || opts.webPort);
@@ -130,6 +133,19 @@ function loadHostKey() {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const { stdin, stdout } = process;
+
+  // ── first run: the one-screen setup (installs /collab + shims `claude`) ────────
+  // Shown ONCE, only on a real interactive run. The bold hazard: rigs/tests spawn
+  // interactive PTYs, so this MUST be gated off for them — every rig/e2e host spawn
+  // sets CLAUDE_SHARE_SKIP_SETUP=1 (shouldRunSetup honors it), or the suite hangs
+  // here at the picker. runSetup writes the shown-once marker when it completes.
+  if (shouldRunSetup({ stdinTTY: stdin.isTTY, stdoutTTY: stdout.isTTY, skipEnv: process.env.CLAUDE_SHARE_SKIP_SETUP, yes: opts.yes })) {
+    try {
+      await runSetup({ input: stdin, output: stdout });
+    } catch {
+      /* setup is best-effort — never block the session on it */
+    }
+  }
   // The terminal band is permanently exactly ONE status line, pinned to the bottom
   // row. Claude gets every other row; the child PTY is resized to rows-1 each repaint.
   const BAND_ROWS = 1;
@@ -1599,6 +1615,10 @@ if (sub === 'relay') {
   // Run INSIDE a wrapped session: drive it via the control socket (CLAUDE_SHARE_CTL)
   // and print a human-readable result. ctlMain owns its own exit code.
   run = ctlMain(sub, process.argv.slice(3));
+} else if (sub === 'setup') {
+  // Re-run the first-run screen + actions ignoring the marker; `--undo` reverses the
+  // shim + plugin. setupMain owns its own exit code.
+  run = setupMain(process.argv.slice(3));
 } else {
   run = main();
 }

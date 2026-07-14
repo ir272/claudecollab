@@ -260,7 +260,7 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
       cols: 200,
       rows: 50,
       cwd: workDir,
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' },
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1', CLAUDE_SHARE_SKIP_SETUP: '1' },
     },
   );
   cli.onData((d) => host.feed(d));
@@ -444,7 +444,7 @@ test('e2e: the wrapped Claude gets the live room file (invite only, no host toke
       cols: 200,
       rows: 50,
       cwd: workDir,
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' },
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1', CLAUDE_SHARE_SKIP_SETUP: '1' },
     },
   );
   cli.onData((d) => host.feed(d));
@@ -519,7 +519,7 @@ test('e2e: lazy start — no --live dials no relay, creates no room, paints no b
   });
   const shim = join(binDir, 'claude');
   writeFileSync(shim, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeClaude)} "$@"\n`, { mode: 0o755 });
-  const childEnv = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' };
+  const childEnv = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1', CLAUDE_SHARE_SKIP_SETUP: '1' };
 
   const bootHost = (extraArgs) => {
     const sink = makeSink();
@@ -611,7 +611,7 @@ test('e2e: control socket — go creates the room (invite only, no token), statu
       cols: 200,
       rows: 50,
       cwd: workDir,
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' },
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1', CLAUDE_SHARE_SKIP_SETUP: '1' },
     },
   );
   cli.onData((d) => host.feed(d));
