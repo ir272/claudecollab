@@ -77,16 +77,17 @@ test('buildWsPath: a host tab carries the seat secret; a guest never does', () =
   assert.ok(!noSeat.includes('seat='), 'no seat param when none was minted');
 });
 
-test('buildWsPath: a guest carries the room password; a host tab never does', () => {
+test('buildWsPath: the room password never rides the URL', () => {
+  // The password now goes on the wire (reply to {t:'pass?'}), never the query
+  // string — so even a passed `pass` must not appear in the built path.
   const guest = buildWsPath({ code: 'brave-otter', name: 'sid', token: 'abc', pass: 'pw' });
-  const gq = new URLSearchParams(guest.slice(guest.indexOf('?') + 1));
-  assert.equal(gq.get('pass'), 'pw');
+  assert.ok(!guest.includes('pass='), 'a guest never leaks the password into the URL');
 
   const open = buildWsPath({ code: 'brave-otter', name: 'sid', token: 'abc' });
   assert.ok(!open.includes('pass='), 'open rooms send no password param at all');
 
   const host = buildWsPath({ code: 'brave-otter', hostToken: 'H', pass: 'pw' });
-  assert.ok(!host.includes('pass='), 'the host tab is exempt from the room password');
+  assert.ok(!host.includes('pass='), 'the host tab never carries a password either');
 });
 
 test('b64encode: round-trips UTF-8 bytes (host decodes Buffer.from(data,"base64"))', () => {

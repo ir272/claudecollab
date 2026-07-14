@@ -16,6 +16,7 @@
 //   ── you're live ──
 
 import { ROLE_GLYPH, stringWidth, truncateToWidth } from '../renderer.js';
+import { stripControls } from './log.js';
 
 // Keep the box comfortably inside an 80-col floor: content ≤ 74 ⇒ box ≤ 78.
 const MAX_INNER = 74;
@@ -63,8 +64,11 @@ export function build(state, log, {
   const joiner = state.get(joinerId);
   const others = state.list().filter((p) => p.id !== joinerId);
 
-  const peopleStr = others.map((p) => `${p.name}${glyph(p.role)}`).join(' ');
-  const joinStr = joiner ? `you join as ${joiner.name}${glyph(joiner.role)}` : '';
+  // Names and prompt snippets are UNTRUSTED (a pasted name/prompt could carry raw
+  // ESC/OSC) and this card is printed straight into every joiner's terminal —
+  // sanitize each display copy before it lands in the box.
+  const peopleStr = others.map((p) => `${stripControls(p.name)}${glyph(p.role)}`).join(' ');
+  const joinStr = joiner ? `you join as ${stripControls(joiner.name)}${glyph(joiner.role)}` : '';
 
   const rows = [];
   rows.push(`people   ${peopleStr}${joinStr ? ` · ${joinStr}` : ''}`);
@@ -74,7 +78,7 @@ export function build(state, log, {
   if (recent.length === 0) {
     rows.push('  (none yet)');
   } else {
-    for (const p of recent) rows.push(`  ${p.author} → "${p.text}" (${relAgo(now() - p.at)})`);
+    for (const p of recent) rows.push(`  ${stripControls(p.author)} → "${stripControls(p.text)}" (${relAgo(now() - p.at)})`);
   }
   const files = log.files;
   const shown = files.slice(0, maxFiles);

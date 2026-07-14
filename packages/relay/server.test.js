@@ -13,7 +13,7 @@ import { writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { startRelay } from './server.js';
+import { startRelay, MAX_PENDING } from './server.js';
 import { encode, Decoder, TYPES } from '../shared/protocol.js';
 
 const { Client, utils } = ssh2;
@@ -305,6 +305,50 @@ test('relay: per-room knock lockout after too many attempts from one ip', async 
   assert.match(g3.getOut(), /too many|try again/i, 'lockout copy');
   await new Promise((r) => setTimeout(r, 150));
   assert.equal(knocked, false, 'locked-out attempt never reaches the host');
+
+  host.send({ t: TYPES.END });
+});
+
+test('relay: pending knocks are capped per room (card-spam lid)', async (t) => {
+  const relay = await startRelay({
+    port: 0,
+    host: '127.0.0.1',
+    hostKey: newKey(),
+    registry: { knockLimit: 100 }, // raise so the per-ip limiter doesn't fire first
+  });
+  t.after(() => relay.close());
+  const port = relay.port;
+
+  const host = await connectHost(port);
+  t.after(() => host.client.end());
+  host.send({ t: TYPES.HELLO, want: 'room' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // Fill the room's pending queue to the cap with guests that knock but are never
+  // admitted. A returning key auto-knocks, so only the first needs to name itself.
+  const key = newKey();
+  const guests = [];
+  t.after(() => guests.forEach((g) => g.client.end()));
+  for (let i = 0; i < MAX_PENDING; i++) {
+    const g = await connectGuest(port, { code, privateKey: key });
+    if (i === 0) {
+      await g.waitFor('pick a name');
+      g.type('flood\r');
+    }
+    await host.next((m) => m.t === TYPES.KNOCK);
+    guests.push(g);
+  }
+
+  // The next pre-knock connection overflows the cap and is refused like a deny;
+  // the host never sees a 13th knock.
+  let knocked = false;
+  host.next((m) => m.t === TYPES.KNOCK).then(() => (knocked = true));
+  const over = await connectGuest(port, { code, privateKey: key });
+  t.after(() => over.client.end());
+  await over.onClose();
+  assert.match(over.getOut(), /didn't let you in|no hard feelings/i, 'overflow gets the deny copy');
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(knocked, false, 'the capped attempt never reaches the host');
 
   host.send({ t: TYPES.END });
 });

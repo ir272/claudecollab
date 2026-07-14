@@ -16,7 +16,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ssh2 from 'ssh2';
 import { WebSocket } from 'ws';
-import { startRelay } from './server.js';
+import { startRelay, MAX_PENDING } from './server.js';
+import { clientIp } from './web.js';
 import { encode, Decoder, TYPES } from '../shared/protocol.js';
 
 const { Client, utils } = ssh2;
@@ -115,6 +116,13 @@ function connectWeb(webPort, query) {
 
 const b64 = (s) => Buffer.from(s).toString('base64');
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
+
+test('clientIp honors Fly-Client-IP only when trusted', () => {
+  const req = { headers: { 'fly-client-ip': '203.0.113.9' }, socket: { remoteAddress: '172.16.0.1' } };
+  assert.equal(clientIp(req, true), '203.0.113.9');
+  assert.equal(clientIp(req, false), '172.16.0.1');
+  assert.equal(clientIp({ headers: {}, socket: { remoteAddress: '172.16.0.1' } }, true), '172.16.0.1');
+});
 
 test('web door: HTTP serves the client + xterm assets, path-traversal safe', async (t) => {
   const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
@@ -289,6 +297,44 @@ test('web door: a ?name= carrying raw ESC/OSC/BEL bytes is sanitized before it k
   assert.ok(!/[\x00-\x1f\x7f]/.test(knock.name), 'no control bytes reach the host terminal');
 });
 
+test('web door: pending knocks are capped per room (card-spam lid)', async (t) => {
+  const relay = await startRelay({
+    port: 0,
+    webPort: 0,
+    host: '127.0.0.1',
+    hostKey: newKey(),
+    registry: { knockLimit: 100 }, // raise so the per-ip limiter doesn't fire first
+  });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  t.after(() => host.client.end());
+  host.send({ t: TYPES.HELLO, want: 'room' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // Fill pending to the cap: MAX_PENDING guests knock but are never admitted.
+  const guests = [];
+  for (let i = 0; i < MAX_PENDING; i++) {
+    const g = connectWeb(relay.webPort, `room=${code}&name=g${i}&token=t${i}`);
+    t.after(() => g.ws.close());
+    await g.ready();
+    await host.next((m) => m.t === TYPES.KNOCK && m.name === `g${i}`);
+    guests.push(g);
+  }
+
+  // The next connection overflows the cap → machine-readable 'busy' + close, and
+  // the host never sees an over-cap knock.
+  let knocked = false;
+  host.next((m) => m.t === TYPES.KNOCK).then(() => (knocked = true));
+  const over = connectWeb(relay.webPort, `room=${code}&name=over&token=t-over`);
+  t.after(() => over.ws.close());
+  const err = await over.nextText((m) => m.t === 'error');
+  assert.equal(err.reason, 'busy');
+  await over.onClose();
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(knocked, false, 'the capped attempt never reaches the host');
+});
+
 test('web door: an unknown room code is refused politely', async (t) => {
   const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
   t.after(() => relay.close());
@@ -299,34 +345,69 @@ test('web door: an unknown room code is refused politely', async (t) => {
   await g.onClose();
 });
 
-test('web door: a passworded room pre-gates guests; the right password knocks; host tab exempt', async (t) => {
+test('web door: room password rides the first WS message, not the URL', async (t) => {
   const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
   t.after(() => relay.close());
 
   const host = await connectHost(relay.port);
-  host.send({ t: TYPES.HELLO, want: 'room', pass: 'letmein' });
+  t.after(() => host.client.end());
+  host.send({ t: TYPES.HELLO, want: 'room', pass: 'sesame' });
   const { code } = await host.next((m) => m.t === TYPES.ROOM);
 
-  // No password → machine-readable refusal; the knock never reaches the host.
-  const bare = connectWeb(relay.webPort, `room=${code}&name=eve&token=t1`);
-  const err1 = await bare.nextText((m) => m.t === 'error');
-  assert.equal(err1.reason, 'password');
-  await bare.onClose();
-
-  // Wrong password → the same refusal (and another burned tryKnock slot).
-  const wrong = connectWeb(relay.webPort, `room=${code}&name=eve&token=t1&pass=nope`);
-  const err2 = await wrong.nextText((m) => m.t === 'error');
-  assert.equal(err2.reason, 'password');
-  await wrong.onClose();
-
-  // The right password → the knock reaches the host as usual.
-  connectWeb(relay.webPort, `room=${code}&name=sid&token=t2&pass=letmein`);
+  // A guest connects WITHOUT ?pass= — the relay challenges over the wire first.
+  const sid = connectWeb(relay.webPort, `room=${code}&name=sid&token=t-sid`);
+  t.after(() => sid.ws.close());
+  const ask = await sid.nextText((m) => m.t === 'pass?');
+  assert.ok(ask, 'the relay asks for the password on the wire, not via the URL');
+  // The right password as the FIRST message → the knock reaches the host.
+  sid.send({ t: 'pass', pass: 'sesame' });
   const knock = await host.next((m) => m.t === TYPES.KNOCK && m.name === 'sid');
-  assert.ok(knock.id, 'a credentialed guest knocks normally');
+  assert.ok(knock.id, 'a correct in-band password lets the guest knock');
 
-  // Host tab: exempt — its credential is the host token the brain itself minted,
-  // and a forged one only lands as an ordinary knock the host will deny.
-  connectWeb(relay.webPort, `room=${code}&host=htok`);
+  // A wrong password → machine-readable refusal + close; the knock never lands.
+  const eve = connectWeb(relay.webPort, `room=${code}&name=eve&token=t-eve`);
+  t.after(() => eve.ws.close());
+  await eve.nextText((m) => m.t === 'pass?');
+  eve.send({ t: 'pass', pass: 'wrong' });
+  const err = await eve.nextText((m) => m.t === 'error');
+  assert.equal(err.reason, 'password');
+  await eve.onClose();
+
+  // A stale ?pass= in the URL is IGNORED — no password leaks through the query
+  // string; the guest is still challenged on the wire.
+  const url = connectWeb(relay.webPort, `room=${code}&name=urlpw&token=t-url&pass=sesame`);
+  t.after(() => url.ws.close());
+  const ask2 = await url.nextText((m) => m.t === 'pass?');
+  assert.ok(ask2, 'a URL ?pass= does not satisfy the gate — the wire challenge still fires');
+
+  // Host tab: exempt — its credential is the host token the brain itself minted.
+  const hostTab = connectWeb(relay.webPort, `room=${code}&host=htok`);
+  t.after(() => hostTab.ws.close());
   const hostKnock = await host.next((m) => m.t === TYPES.KNOCK && m.fp === 'webhost:htok');
   assert.ok(hostKnock.id, 'the host tab needs no room password');
+});
+
+test('web door: a room ending mid-password-challenge refuses the late answer', async (t) => {
+  const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  t.after(() => host.client.end());
+  host.send({ t: TYPES.HELLO, want: 'room', pass: 'sesame' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // Guest reaches the password prompt (in neither guests nor pending yet)…
+  const late = connectWeb(relay.webPort, `room=${code}&name=late&token=t-late`);
+  t.after(() => late.ws.close());
+  await late.nextText((m) => m.t === 'pass?');
+
+  // …then the host ends the room while they're typing.
+  host.send({ t: TYPES.END });
+  await new Promise((r) => setTimeout(r, 50)); // let closeRoom run
+
+  // The (correct!) answer must be refused — never knocked into the dead room.
+  late.send({ t: 'pass', pass: 'sesame' });
+  const err = await late.nextText((m) => m.t === 'error');
+  assert.equal(err.reason, 'no-room', 'a late password answer meets a refusal, not a 60s ghost wait');
+  await late.onClose();
 });

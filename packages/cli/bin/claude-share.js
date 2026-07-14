@@ -735,7 +735,7 @@ async function main() {
         runRecap(by);
         break;
       case 'end':
-        endSession();
+        endSession(parsed.save);
         break;
     }
     repaintBand();
@@ -758,13 +758,15 @@ async function main() {
 
   // /end — end the room now. The two-step "end? / save?" confirmation is a browser-UI
   // concern (the host tab gates it and fires a single /end); the terminal has no y/n
-  // path anymore. We write the attributed session.md then disconnect everyone —
-  // defaulting to save preserves the record, since the browser doesn't yet signal a
-  // no-save choice (spec §host controls: the log is kept in memory either way).
-  function endSession() {
-    try {
-      log.write(path.join(process.cwd(), 'session.md'));
-    } catch {}
+  // path anymore. The browser's "Save & end" sends `/end` (save) and "Just end" sends
+  // `/end nosave` (skip). `save` defaults to true so a bare host-typed /end still keeps
+  // the record; a nosave never touches disk (so it can't overwrite an existing file).
+  function endSession(save = true) {
+    if (save) {
+      try {
+        log.write(path.join(process.cwd(), 'session.md'));
+      } catch {}
+    }
     relay?.end();
     cleanup(0);
   }

@@ -55,6 +55,8 @@ const relay = await startRelay({
   hostName,
   maxRooms: Number(process.env.MAX_ROOMS || 50),
   roomSecret,
+  // Only enable behind Fly's proxy: `fly secrets set CLAUDE_SHARE_TRUST_PROXY=1`.
+  trustProxy: process.env.CLAUDE_SHARE_TRUST_PROXY === '1',
 });
 
 // The public-half fingerprint of our ssh identity. Safe to publish — hosts pin

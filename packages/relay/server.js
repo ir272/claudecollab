@@ -27,6 +27,12 @@ const { parseKey } = utils;
 const DEFAULT_KNOCK_TIMEOUT_MS = 60 * 1000; // spec: 60s waiting screen
 const DEFAULT_TTL_MS = 10 * 60 * 1000; // spec: hold the code 10 min on host drop
 
+// Per-room ceiling on PENDING (knocked-but-not-yet-admitted) guests. room.pending
+// is otherwise unbounded, so a script could stack knock cards forever without ever
+// being admitted. Sits well above the 8-guest room cap + normal churn; overflow is
+// refused exactly like a deny. Shared by both doors (the web door gets it via ctx).
+export const MAX_PENDING = 12;
+
 // Standard OpenSSH SHA256 fingerprint over the raw public-key blob.
 function fingerprint(keyData) {
   return 'SHA256:' + createHash('sha256').update(keyData).digest('base64').replace(/=+$/, '');
@@ -104,6 +110,10 @@ export function startRelay(opts = {}) {
     // ungated on purpose: it is already bound to the creating host's key
     // fingerprint, and must keep working mid-session if the secret rotates.
     roomSecret,
+    // Trust Fly's `Fly-Client-IP` header for per-IP knock limits. Only safe when
+    // the relay genuinely sits behind Fly's proxy (a direct-exposed relay could be
+    // spoofed by a client-sent header), so it is off unless the operator opts in.
+    trustProxy = false,
     registry: registryOpts = {},
   } = opts;
 
@@ -397,6 +407,15 @@ export function startRelay(opts = {}) {
       return;
     }
 
+    // Card-spam lid: a full pending queue is refused exactly like a deny, so a
+    // script can't stack knock cards without ever being admitted.
+    if (room.pending.size >= MAX_PENDING) {
+      safeWrite(stream, COPY.denied);
+      safeEnd(stream);
+      safeEnd(conn);
+      return;
+    }
+
     const rec = {
       id: randomUUID(),
       code,
@@ -639,7 +658,7 @@ export function startRelay(opts = {}) {
       // The browser door shares this relay's live rooms + registry, so web
       // participants are real room members subject to the same knock/ban/cap.
       if (webPort == null) return done(null);
-      startWebDoor({ port: webPort, host, live, registry, knockTimeoutMs, onGuestGone, safeWrite }).then(done, (err) => {
+      startWebDoor({ port: webPort, host, live, registry, knockTimeoutMs, onGuestGone, safeWrite, trustProxy, maxPending: MAX_PENDING }).then(done, (err) => {
         try {
           close();
         } catch {

@@ -39,6 +39,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(here, 'public');
 const INDEX_HTML = path.join(PUBLIC_DIR, 'index.html');
 
+// How long a passworded room waits for the client's first {t:'pass'} frame
+// before closing the connection. Generous — a human may be prompted for it.
+const PASS_TIMEOUT_MS = 10000;
+
 // Resolve the vendored xterm package dir through node resolution so monorepo
 // hoisting doesn't matter. `/assets/<rest>` maps to `<xtermDir>/<rest>`.
 const require = createRequire(import.meta.url);
@@ -98,6 +102,24 @@ function wsClose(ws) {
 const sendErr = (ws, reason) => wsSendText(ws, JSON.stringify({ t: 'error', reason }));
 
 /**
+ * The client IP the knock limiter keys on. Behind Fly's proxy every connection's
+ * `req.socket.remoteAddress` is the proxy, so all strangers share ONE lockout
+ * bucket. When the operator declares the deploy sits behind Fly
+ * (CLAUDE_SHARE_TRUST_PROXY=1 → trustProxy), honor the `Fly-Client-IP` header;
+ * otherwise ignore it (a direct-exposed relay must not trust a client-set header).
+ * @param {import('node:http').IncomingMessage} req
+ * @param {boolean} trustProxy
+ * @returns {string}
+ */
+export function clientIp(req, trustProxy) {
+  if (trustProxy) {
+    const h = req.headers['fly-client-ip'];
+    if (typeof h === 'string' && h.length) return h;
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+
+/**
  * Start the HTTP + WebSocket web door. Shares the live routing state and the
  * registry with the ssh relay so web participants are real room members.
  *
@@ -109,10 +131,13 @@ const sendErr = (ws, reason) => wsSendText(ws, JSON.stringify({ t: 'error', reas
  * @param {number} ctx.knockTimeoutMs       waiting-screen timeout
  * @param {(rec:object)=>void} ctx.onGuestGone  shared guest-teardown (frees seat, LEFTs the host)
  * @param {(stream:any,data:any)=>void} ctx.safeWrite  shared fail-soft writer (to the host stream)
+ * @param {boolean} [ctx.trustProxy]        honor Fly-Client-IP for per-IP knock limits (Fly deploys only)
  * @returns {Promise<{close():void, port:number, address:object}>}
  */
 export function startWebDoor(ctx) {
-  const { port = 0, host = '127.0.0.1', live, registry, knockTimeoutMs, onGuestGone, safeWrite } = ctx;
+  // maxPending's fallback mirrors server.js's MAX_PENDING — startRelay always
+  // supplies it; the default only covers a direct startWebDoor caller (tests).
+  const { port = 0, host = '127.0.0.1', live, registry, knockTimeoutMs, onGuestGone, safeWrite, trustProxy = false, maxPending = 12 } = ctx;
 
   // ---- HTTP: index (SPA-style, room code in the path) + vendored xterm assets
 
@@ -218,7 +243,7 @@ export function startWebDoor(ctx) {
     // and the host writes it verbatim to its terminal / log / session.md and mirrors
     // it to every ssh guest — raw ESC/OSC/BEL bytes here would be escape injection.
     const name = sanitizeName(q.get('name'), isHostTab ? 'host' : 'guest');
-    const ip = req.socket.remoteAddress || 'unknown';
+    const ip = clientIp(req, trustProxy);
 
     // Same gate as the ssh door (spec: respect bans/lockouts/caps identically).
     const room = code ? live.get(code) : null;
@@ -226,14 +251,16 @@ export function startWebDoor(ctx) {
     if (!room.hostPresent) return void (sendErr(ws, 'host-gone'), wsClose(ws));
     if (fp && registry.get(code).banned.has(fp)) return void (sendErr(ws, 'banned'), wsClose(ws));
     if (!registry.tryKnock(code, ip)) return void (sendErr(ws, 'lockout'), wsClose(ws));
-    // Room password pre-gate (mirrors the ssh door's prompt). Host tabs are
-    // exempt: their credential is the host token the brain itself minted — and a
-    // forged `?host=` gains nothing, it just lands as an ordinary pending knock
-    // the host will see and deny. Wrong guesses already burned a tryKnock slot
-    // above, so brute force hits the per-ip lockout fast.
-    if (!isHostTab && room.pass && !secretsMatch(q.get('pass') ?? '', room.pass)) {
-      return void (sendErr(ws, 'password'), wsClose(ws));
-    }
+
+    // Room password pre-gate. Instead of reading `?pass=` off the URL (where it
+    // leaks into proxy/access logs and browser history), a passworded room
+    // challenges over the WIRE: it answers with {t:'pass?'} and waits for the
+    // client's FIRST message, {t:'pass', pass}. Only a match proceeds to the knock.
+    // Host tabs are exempt: their credential is the host token the brain itself
+    // minted — a forged `?host=` gains nothing, it just lands as an ordinary
+    // pending knock the host will deny. The tryKnock slot was already burned above,
+    // so brute force still hits the per-ip lockout fast.
+    const needsPass = !isHostTab && !!room.pass;
 
     const rec = {
       id: randomUUID(),
@@ -242,7 +269,9 @@ export function startWebDoor(ctx) {
       ws,
       fp,
       name,
-      phase: 'knocking', // web skips the ssh name prompt: name arrives in the query
+      // web skips the ssh name prompt (name arrives in the query); a passworded
+      // room parks in 'pass' until the client answers the wire challenge.
+      phase: needsPass ? 'pass' : 'knocking',
       cols: 80, // spec floor; refined by the browser's first {t:'resize'}
       rows: 24,
       knockTimer: null,
@@ -254,24 +283,73 @@ export function startWebDoor(ctx) {
       conn: { end: () => wsClose(ws) },
       sendText: (s) => wsSendText(ws, s), // STATE + the 'joined' signal go as text
     };
-    room.pending.set(rec.id, rec);
 
-    // Knock the host (identical shape to the ssh door). A returning token carries
-    // its prior name in `seen`; brand-new ⇒ null.
-    const priorName = room.seen.get(fp);
-    const seen = priorName !== undefined ? priorName : null;
-    room.seen.set(fp, name);
-    rec.announced = true;
-    safeWrite(room.hostStream, encode({ t: TYPES.KNOCK, id: rec.id, name: rec.name, fp: rec.fp, seen }));
-    rec.knockTimer = setTimeout(() => {
+    // Register the pending rec, KNOCK the host, and arm the admit timer. Deferred
+    // behind the password gate so a passworded room never shows a pending card (or
+    // sends a KNOCK) for a guest that hasn't proven the password yet.
+    function proceedToKnock() {
       if (rec.gone) return;
-      sendErr(ws, 'timeout');
-      wsClose(ws); // 'close' → onGuestGone: drops the seat, LEFTs the host
-    }, knockTimeoutMs);
-    rec.knockTimer.unref?.();
+      // The room may have ended (or its host dropped) while the guest sat at the
+      // password prompt — a pass-phase rec is in neither guests nor pending, so
+      // closeRoom/onHostGone can't reach it. Refuse instead of knocking a dead room.
+      if (live.get(rec.code) !== room) return void (sendErr(ws, 'no-room'), wsClose(ws));
+      if (!room.hostPresent) return void (sendErr(ws, 'host-gone'), wsClose(ws));
+      if (rec.knockTimer) {
+        clearTimeout(rec.knockTimer); // clear the pass-challenge timer, if any
+        rec.knockTimer = null;
+      }
+      // Card-spam lid (mirrors the ssh door): a full pending queue is refused like
+      // a deny, so a script can't stack knock cards without ever being admitted.
+      if (room.pending.size >= maxPending) {
+        return void (sendErr(ws, 'busy'), wsClose(ws));
+      }
+      rec.phase = 'knocking';
+      room.pending.set(rec.id, rec);
+      // A returning token carries its prior name in `seen`; brand-new ⇒ null.
+      const priorName = room.seen.get(fp);
+      const seen = priorName !== undefined ? priorName : null;
+      room.seen.set(fp, name);
+      rec.announced = true;
+      safeWrite(room.hostStream, encode({ t: TYPES.KNOCK, id: rec.id, name: rec.name, fp: rec.fp, seen }));
+      rec.knockTimer = setTimeout(() => {
+        if (rec.gone) return;
+        sendErr(ws, 'timeout');
+        wsClose(ws); // 'close' → onGuestGone: drops the seat, LEFTs the host
+      }, knockTimeoutMs);
+      rec.knockTimer.unref?.();
+    }
+
+    if (needsPass) {
+      wsSendText(ws, '{"t":"pass?"}'); // ask on the wire; client replies {t:'pass'}
+      rec.knockTimer = setTimeout(() => {
+        if (rec.gone) return;
+        sendErr(ws, 'timeout');
+        wsClose(ws);
+      }, PASS_TIMEOUT_MS);
+      rec.knockTimer.unref?.();
+    } else {
+      proceedToKnock();
+    }
 
     ws.on('message', (data, isBinary) => {
       if (isBinary) return; // browsers only send JSON text; screen flows one way
+      // Pre-knock password phase: the FIRST text frame must be {t:'pass', pass}.
+      if (rec.phase === 'pass') {
+        let pm;
+        try {
+          pm = JSON.parse(data.toString('utf8'));
+        } catch {
+          return;
+        }
+        if (!isObj(pm) || pm.t !== 'pass') return;
+        if (secretsMatch(typeof pm.pass === 'string' ? pm.pass : '', room.pass)) {
+          proceedToKnock();
+        } else {
+          sendErr(ws, 'password');
+          wsClose(ws);
+        }
+        return;
+      }
       if (rec.phase !== 'live') return; // ignore input until admitted (ssh parity)
       const r = live.get(rec.code);
       if (!r || !r.hostPresent || !r.guests.has(rec.id)) return;
