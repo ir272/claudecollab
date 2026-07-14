@@ -135,7 +135,7 @@ export function clientIp(req, trustProxy) {
  * @returns {Promise<{close():void, port:number, address:object}>}
  */
 export function startWebDoor(ctx) {
-  const { port = 0, host = '127.0.0.1', live, registry, knockTimeoutMs, onGuestGone, safeWrite, trustProxy = false } = ctx;
+  const { port = 0, host = '127.0.0.1', live, registry, knockTimeoutMs, onGuestGone, safeWrite, trustProxy = false, maxPending = 12 } = ctx;
 
   // ---- HTTP: index (SPA-style, room code in the path) + vendored xterm assets
 
@@ -290,6 +290,11 @@ export function startWebDoor(ctx) {
       if (rec.knockTimer) {
         clearTimeout(rec.knockTimer); // clear the pass-challenge timer, if any
         rec.knockTimer = null;
+      }
+      // Card-spam lid (mirrors the ssh door): a full pending queue is refused like
+      // a deny, so a script can't stack knock cards without ever being admitted.
+      if (room.pending.size >= maxPending) {
+        return void (sendErr(ws, 'busy'), wsClose(ws));
       }
       rec.phase = 'knocking';
       room.pending.set(rec.id, rec);

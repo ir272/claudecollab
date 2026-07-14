@@ -16,7 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ssh2 from 'ssh2';
 import { WebSocket } from 'ws';
-import { startRelay } from './server.js';
+import { startRelay, MAX_PENDING } from './server.js';
 import { clientIp } from './web.js';
 import { encode, Decoder, TYPES } from '../shared/protocol.js';
 
@@ -295,6 +295,44 @@ test('web door: a ?name= carrying raw ESC/OSC/BEL bytes is sanitized before it k
   // (0x07), no CR/LF — the control bytes are gone, the CSI/OSC bodies are inert text.
   assert.equal(knock.name, 'a[31mX]0;pwneddrop');
   assert.ok(!/[\x00-\x1f\x7f]/.test(knock.name), 'no control bytes reach the host terminal');
+});
+
+test('web door: pending knocks are capped per room (card-spam lid)', async (t) => {
+  const relay = await startRelay({
+    port: 0,
+    webPort: 0,
+    host: '127.0.0.1',
+    hostKey: newKey(),
+    registry: { knockLimit: 100 }, // raise so the per-ip limiter doesn't fire first
+  });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  t.after(() => host.client.end());
+  host.send({ t: TYPES.HELLO, want: 'room' });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // Fill pending to the cap: MAX_PENDING guests knock but are never admitted.
+  const guests = [];
+  for (let i = 0; i < MAX_PENDING; i++) {
+    const g = connectWeb(relay.webPort, `room=${code}&name=g${i}&token=t${i}`);
+    t.after(() => g.ws.close());
+    await g.ready();
+    await host.next((m) => m.t === TYPES.KNOCK && m.name === `g${i}`);
+    guests.push(g);
+  }
+
+  // The next connection overflows the cap → machine-readable 'busy' + close, and
+  // the host never sees an over-cap knock.
+  let knocked = false;
+  host.next((m) => m.t === TYPES.KNOCK).then(() => (knocked = true));
+  const over = connectWeb(relay.webPort, `room=${code}&name=over&token=t-over`);
+  t.after(() => over.ws.close());
+  const err = await over.nextText((m) => m.t === 'error');
+  assert.equal(err.reason, 'busy');
+  await over.onClose();
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(knocked, false, 'the capped attempt never reaches the host');
 });
 
 test('web door: an unknown room code is refused politely', async (t) => {
