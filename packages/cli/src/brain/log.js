@@ -11,6 +11,24 @@
 
 import fs from 'node:fs';
 
+// Escape-injection guard: display copies only — pty-bound text stays raw (Claude
+// must receive real bytes, including newlines). Pasted prompts land verbatim in
+// join cards, the shared log, and session.md; a raw ESC/OSC/BEL there would inject
+// terminal escapes into every guest's terminal and the saved file. This strips
+// ANSI/OSC sequences wholesale, then any remaining C0 controls + DEL — but keeps
+// \n and \t so multi-line prompts and tabs survive as plain text.
+const ANSI = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])/g;
+
+/**
+ * Remove terminal control/escape sequences from a string, keeping printable text
+ * plus newlines and tabs. Safe to run on any untrusted display string.
+ * @param {string} s
+ * @returns {string}
+ */
+export function stripControls(s) {
+  return String(s).replace(ANSI, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+}
+
 export class Log {
   #entries = [];
   #files = [];
@@ -23,16 +41,16 @@ export class Log {
     this.#startedAt = now();
   }
 
-  /** Record an attributed prompt. */
+  /** Record an attributed prompt (sanitized for display — the raw text still went to the pty). */
   prompt(author, text, at = this.#now()) {
-    const e = { kind: 'prompt', author, text: String(text), at };
+    const e = { kind: 'prompt', author: stripControls(author), text: stripControls(text), at };
     this.#entries.push(e);
     return e;
   }
 
   /** Record a room event (join/leave/role/kick/mode/pause). */
   event(text, at = this.#now()) {
-    const e = { kind: 'event', text: String(text), at };
+    const e = { kind: 'event', text: stripControls(text), at };
     this.#entries.push(e);
     return e;
   }

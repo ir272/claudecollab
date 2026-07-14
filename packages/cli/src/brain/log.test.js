@@ -3,13 +3,25 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Log } from './log.js';
+import { Log, stripControls } from './log.js';
 
 // A controllable clock so relative-time assertions are deterministic.
 function fixedClock(start = 0) {
   let t = start;
   return { now: () => t, set: (v) => (t = v), advance: (ms) => (t += ms) };
 }
+
+test('stripControls removes escape/control bytes but keeps text', () => {
+  assert.equal(stripControls('hi\x1b]0;pwn\x07there\x1b[31m!'), 'hithere!');
+  assert.equal(stripControls('line1\nline2\tok'), 'line1\nline2\tok');
+});
+
+test('log.prompt stores sanitized text', () => {
+  const log = new Log();
+  log.prompt('eve', 'do\x1b[2Jthis');
+  assert.match(log.toText(), /do this|dothis/);
+  assert.doesNotMatch(log.toText(), /\x1b/);
+});
 
 test('records attributed prompts in order', () => {
   const clk = fixedClock(1000);
