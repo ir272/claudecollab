@@ -9,8 +9,7 @@
   "homepage": "https://claudecollab.org",
   "type": "module",
   "bin": {
-    "collab": "packages/cli/bin/claude-share.js",
-    "collab-relay": "packages/relay/bin/serve.js"
+    "collab": "packages/cli/bin/claude-share.js"
   },
   "files": [
     "packages/cli",

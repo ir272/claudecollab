@@ -1427,7 +1427,16 @@ async function main() {
   repaintBand(); // draw the band immediately, before the first frame
 }
 
-main().catch((err) => {
+// `collab relay [args]` IS the relay (single-bin: npx resolves one bin). serve.js
+// runs on import and reads process.argv — splice ours out so its args line up.
+let run;
+if (process.argv[2] === 'relay') {
+  process.argv.splice(2, 1);
+  run = import('../../relay/bin/serve.js');
+} else {
+  run = main();
+}
+run.catch((err) => {
   process.stderr.write(`collab: ${err?.stack || err}\n`);
   process.exit(1);
 });
