@@ -22,16 +22,33 @@ The first npx run downloads for ~10–20 seconds; after that it's fast.
 
 Run `collab` instead of `claude`. It looks and works **exactly** like Claude — because at this point it *is* just Claude. It is not sharing anything yet. You go live only when you decide to.
 
+## The first time you run it
+
+The very first time you run `collab`, you'll see a quick one-screen setup. You only see it once. It does two things for you:
+
+1. Adds the `/collab` command to Claude Code — this is the whole point; it's how you go live.
+2. Makes your normal `claude` command shareable too, so you can just keep typing `claude` and still get `/collab`.
+
+It also asks one optional thing: do you want `/collab @name` to deliver your join link through **Slack**, **Gmail**, or **Discord**? Pick any, or none. You turn these on in your Claude account (at `claude.ai/customize/connectors`) — the screen tells you how, and you can change your mind anytime.
+
+Then it starts Claude like normal.
+
+Changed your mind, or want to run it again?
+
+- `collab setup` — show the setup screen again.
+- `collab setup --undo` — put your normal `claude` back (removes the shim and the plugin).
+- `collab --yes` — skip the setup screen this time (or set `CLAUDE_SHARE_SKIP_SETUP=1`).
+
 ## Go live with `/collab`
 
-One-time setup — add the `/collab` command to Claude:
+The first-run setup already added `/collab` for you. (Skipped it? Add it by hand:)
 
 ```
 /plugin marketplace add ir272/claudecollab
 /plugin install collab@claudecollab
 ```
 
-After that, whenever you want people to join, just type this inside your session:
+Whenever you want people to join, just type this inside your session:
 
 ```
 /collab
@@ -128,6 +145,7 @@ Two safety features come built in:
 | `--secret <s>` | the password for a locked server (or use `CLAUDE_SHARE_SECRET`) |
 | `--fingerprint <fp>` | lock onto a specific server's ID |
 | `--cmd <program>` | run something other than `claude` |
+| `--yes` | skip the first-run setup screen |
 | `-- <args…>` | anything after `--` is passed to the program you're running |
 
 <details>
@@ -142,6 +160,12 @@ packages/cli/      the main program you run — the brain
 ```
 
 </details>
+
+## Support this project
+
+It's free and open source, and the community server costs a little to keep running. If it saved you some time, please consider chipping in — every bit helps keep it open ♥
+
+**[github.com/sponsors/ir272](https://github.com/sponsors/ir272)**
 
 ## License
 

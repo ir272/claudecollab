@@ -17,5 +17,6 @@ sleep 1
 
 
 export CLAUDE_SHARE_NO_CLIPBOARD=1
+export CLAUDE_SHARE_SKIP_SETUP=1 # rigs spawn an interactive PTY — never show the first-run picker
 node packages/cli/bin/claude-share.js --live --relay ssh://127.0.0.1:2226 --web-port 8788
 kill $RELAY_PID 2>/dev/null

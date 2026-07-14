@@ -206,7 +206,7 @@ function bootHost(t) {
         cols: 200,
         rows: 50,
         cwd: workDir,
-        env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' },
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1', CLAUDE_SHARE_SKIP_SETUP: '1' },
       },
     );
     cli.onData((d) => host.feed(d));
