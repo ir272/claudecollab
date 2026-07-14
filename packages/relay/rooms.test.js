@@ -54,6 +54,14 @@ test('a fresh room has the documented shape', () => {
   assert.equal(room.guests.size, 0);
 });
 
+test('create honors a requested cap, clamped to [1, relayCap]', () => {
+  const reg = createRegistry(); // relayCap defaults to 8
+  assert.equal(reg.create({ cap: 2 }).cap, 2, 'a modest request is honored');
+  assert.equal(reg.create({ cap: 99 }).cap, 8, 'clamped down to the relay ceiling');
+  assert.equal(reg.create({ cap: 0 }).cap, 1, 'clamped up to at least 1');
+  assert.equal(reg.create().cap, 8, 'no request → the relay ceiling');
+});
+
 test('cap: the room holds 8 guests and rejects the 9th', () => {
   const reg = createRegistry();
   const { code } = reg.create();
