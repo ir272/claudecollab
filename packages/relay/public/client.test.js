@@ -244,6 +244,48 @@ test('overlayView: the full view model, self excluded from cursors', () => {
   assert.deepEqual(empty.othersPointers, []);
 });
 
+test('overlayView: turn history attaches to each author’s panel (who typed what + response)', () => {
+  const state = {
+    room: 'brave-otter',
+    participants: [
+      { id: 'host', name: 'ian', role: 'host', color: '#e5484d' },
+      { id: 'g1', name: 'sid', role: 'prompter', color: '#0091ff' },
+    ],
+    drafts: { boxes: [] },
+    queue: [{ n: 1, author: 'g1', text: 'queued one' }],
+    history: [
+      { id: 1, author: 'host', prompt: 'add rate limiting', response: 'done', running: false },
+      { id: 2, author: 'g1', prompt: 'use redis', response: '', running: true },
+      { id: 3, author: 'host', prompt: 'now the README', response: 'wrote docs', running: false },
+    ],
+    claudeState: 'busy',
+    paused: false,
+    pointers: {},
+    knocks: [],
+  };
+  const v = overlayView(state, 'host');
+  const hostPanel = v.panels.find((p) => p.id === 'host');
+  const g1Panel = v.panels.find((p) => p.id === 'g1');
+
+  assert.deepEqual(
+    hostPanel.turns.map((t) => [t.prompt, t.response, t.running]),
+    [
+      ['add rate limiting', 'done', false],
+      ['now the README', 'wrote docs', false],
+    ],
+    'each author only sees their own turns, in order',
+  );
+  assert.deepEqual(g1Panel.turns.map((t) => [t.prompt, t.running]), [['use redis', true]]);
+  assert.equal(g1Panel.pending[0].text, 'queued one', 'still-queued prompts remain separate from history');
+
+  // Missing history field → panels still valid with empty turns.
+  const noHistory = overlayView({ ...state, history: undefined }, 'host');
+  assert.deepEqual(
+    noHistory.panels.find((p) => p.id === 'host').turns,
+    [],
+  );
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // SMOKE: HTTP serves the client, and a WS join completes against a fake host
 // ════════════════════════════════════════════════════════════════════════════

@@ -23,7 +23,25 @@
 
 'use strict';
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { spawn } = require('node:child_process');
+
+// A JSONL session transcript, exactly like the one real Claude Code writes and
+// hands its hooks via `transcript_path`. claude-share reads this at the Stop edge
+// to pair each turn with Claude's response (never scraped from the TUI), so the
+// stub must produce one for that path to be exercised end to end.
+const transcriptPath = path.join(os.tmpdir(), `fake-claude-transcript-${process.pid}.jsonl`);
+function tScribe(type, text) {
+  try {
+    fs.appendFileSync(
+      transcriptPath,
+      JSON.stringify({ type, message: { role: type, content: [{ type: 'text', text }] } }) + '\n',
+    );
+  } catch {
+    /* best-effort: a transcript write hiccup must never break the stub */
+  }
+}
 
 // ── locate --settings and load the injected hook commands ────────────────────
 const argv = process.argv.slice(2);
@@ -117,6 +135,7 @@ function enqueue(step) {
 
 async function processInput(line) {
   if (pendingAsk && /^[yn]$/i.test(line)) return processAnswer(line);
+  tScribe('user', line);
   await fire('UserPromptSubmit', { permission_mode: 'default', prompt: line });
   say(`[claude] prompt: ${line}`);
   if (line.includes('[ask]')) {
@@ -125,15 +144,18 @@ async function processInput(line) {
     say('[claude] permission needed: allow Edit? (y/n)');
     pendingAsk = true;
   } else {
-    await fire('Stop', {});
+    tScribe('assistant', `Done — handled: ${line}`);
+    await fire('Stop', { transcript_path: transcriptPath });
     say('[claude] done');
   }
 }
 
 async function processAnswer(ans) {
   pendingAsk = false;
-  say(`[claude] permission ${/y/i.test(ans) ? 'granted' : 'denied'}`);
-  await fire('Stop', {});
+  const granted = /y/i.test(ans);
+  say(`[claude] permission ${granted ? 'granted' : 'denied'}`);
+  tScribe('assistant', granted ? 'Permission granted — change applied.' : 'Permission denied — no change made.');
+  await fire('Stop', { transcript_path: transcriptPath });
   say('[claude] done');
 }
 
