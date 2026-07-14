@@ -12,9 +12,13 @@ Your terminal looks like normal Claude, just one extra line at the bottom. All t
 ## Start a session
 
 ```bash
+npx @claudecollab/cli        # try it right now, nothing to install
+# liked it? make it permanent:
 npm install -g @claudecollab/cli
 collab
 ```
+
+The first npx run downloads for ~10–20 seconds; after that it's fast.
 
 That's it. Run `collab` instead of `claude`. It works the same, but now it makes two links:
 
@@ -22,6 +26,12 @@ That's it. Run `collab` instead of `claude`. It works the same, but now it makes
 - A **share link** — this one gets copied for you. Send it to your friends.
 
 Your friends just open the share link in a browser. They don't install anything.
+
+## Works on
+
+macOS and Linux (Windows counts too, if you use WSL). Native Windows isn't tested yet — if you try it, please open an issue and tell us how it went.
+
+You need Node 22 or newer. If you installed Claude Code with its native installer (not npm), you might not have Node yet — install it first.
 
 ## Two links — don't mix them up
 
@@ -60,7 +70,7 @@ When a friend types something, **it runs on your computer, as if you typed it.**
 By default, `collab` uses our free server at claudecollab.org. Want to run your own instead? The same install includes it:
 
 ```bash
-collab-relay                              # start your own server
+collab relay                              # start your own server
 collab --relay ssh://127.0.0.1:2222       # use it
 ```
 
@@ -68,7 +78,7 @@ To put your server online for good (on Fly.io or any host — see `fly.toml`):
 
 ```bash
 fly launch --no-deploy
-fly secrets set HOST_KEY="$(collab-relay --make-key)"
+fly secrets set HOST_KEY="$(collab relay --make-key)"
 fly secrets set ROOM_SECRET="$(openssl rand -hex 16)"   # optional lock (see below)
 fly deploy
 ```
