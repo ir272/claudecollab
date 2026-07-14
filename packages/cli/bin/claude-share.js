@@ -29,6 +29,7 @@ import { randomBytes } from 'node:crypto';
 import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
 import { startCtl } from '../src/ctl.js';
+import { ctlMain } from '../src/ctl-client.js';
 import { writeRoomFile, clearRoomFile } from '../src/room-file.js';
 import { paint, ROLE_GLYPH } from '../src/renderer.js';
 import { ScreenSnapshot } from '../src/screen-snapshot.js';
@@ -1557,9 +1558,14 @@ async function main() {
 // `collab relay [args]` IS the relay (single-bin: npx resolves one bin). serve.js
 // runs on import and reads process.argv — splice ours out so its args line up.
 let run;
-if (process.argv[2] === 'relay') {
+const sub = process.argv[2];
+if (sub === 'relay') {
   process.argv.splice(2, 1);
   run = import('../../relay/bin/serve.js');
+} else if (sub === 'go' || sub === 'off' || sub === 'status') {
+  // Run INSIDE a wrapped session: drive it via the control socket (CLAUDE_SHARE_CTL)
+  // and print a human-readable result. ctlMain owns its own exit code.
+  run = ctlMain(sub, process.argv.slice(3));
 } else {
   run = main();
 }
