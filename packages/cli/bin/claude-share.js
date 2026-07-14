@@ -28,6 +28,7 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
+import { startCtl } from '../src/ctl.js';
 import { writeRoomFile, clearRoomFile } from '../src/room-file.js';
 import { paint, ROLE_GLYPH } from '../src/renderer.js';
 import { ScreenSnapshot } from '../src/screen-snapshot.js';
@@ -150,6 +151,11 @@ async function main() {
   // detectable; the file only EXISTS while a room is live (written on grant/reclaim,
   // removed on gone/give-up/exit). Whitelisted: the host token never reaches it.
   const roomFile = path.join(os.tmpdir(), `claude-share-room-${process.pid}.json`);
+  // The control socket the wrapped Claude drives with `collab go|off|status` (spec
+  // phase 5a). Its PATH is exported as CLAUDE_SHARE_CTL for every spawn; the socket
+  // itself is created below (0600, same-user only) and unlinked in cleanup(). The
+  // host URL/token NEVER crosses it — replies carry room + inviteUrl only.
+  const ctlPath = path.join(os.tmpdir(), `claude-share-ctl-${process.pid}.sock`);
   // The seat this session is bound to: the first host browser's seat secret claims
   // it; later browsers presenting the token with a different/absent seat are refused
   // (leaked-link defense). Reset by a host-terminal Ctrl-G handoff (see below).
@@ -212,6 +218,7 @@ async function main() {
   // text is dropped (drafts are created explicitly — never by stray typing).
   const nudgedAt = new Map();
   let relay = null;
+  let ctl = null; // the control-socket server (started below; closed in cleanup)
   let exited = false;
   // Reconnect-with-reclaim state (spec §failure-behavior: the relay holds the code
   // 10 min after a host drop). On a lost connection we reconnect and RECLAIM the
@@ -247,7 +254,7 @@ async function main() {
     // CLAUDE_SHARE_ROOM_FILE is set for EVERY spawn, solo included: its presence
     // tells the child it's running under collab; the file at that path appears only
     // once a room is live (phase 5's skill relies on that live-vs-not distinction).
-    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: bandRows(), env: { CLAUDE_SHARE_ROOM_FILE: roomFile } });
+    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: bandRows(), env: { CLAUDE_SHARE_ROOM_FILE: roomFile, CLAUDE_SHARE_CTL: ctlPath } });
   } catch (err) {
     process.stderr.write(
       `collab: could not start "${opts.cmd}": ${err.message}\n` +
@@ -1308,6 +1315,79 @@ async function main() {
   }
   if (opts.relay && opts.live) goLive();
 
+  // ── control socket: `collab go|off|status` drives the room lifecycle ──────────
+  // The wrapped Claude connects here (CLAUDE_SHARE_CTL) to go live / stop / query
+  // WITHOUT restarting. Replies carry room + inviteUrl only — never the host URL or
+  // token (those stay on the host's own terminal / room file whitelist).
+  ctl = startCtl({
+    path: ctlPath,
+    handlers: {
+      // Go live: apply any valid overrides, dial the relay, and resolve on the FIRST
+      // of room-granted / relay-refused / 15s timeout. Idempotent when already live.
+      go: async (req) => {
+        if (!opts.relay) return { ok: false, error: 'sharing disabled (--no-relay)' };
+        if (state.room) return { ok: true, room: state.room, inviteUrl: inviteUrlStr ?? undefined };
+        // Overrides (each validated; a bad value is ignored so the current setting stands).
+        if (req.guests === 'viewer' || req.guests === 'prompter') opts.guests = req.guests;
+        if (Number.isFinite(req.max) && Math.floor(req.max) > 0) opts.cap = Math.floor(req.max);
+        if (typeof req.pass === 'string' && req.pass.length) opts.roomPassword = req.pass;
+        goLive();
+        if (!relay) return { ok: false, error: 'sharing unavailable' };
+        // One-shot waiter over the live relay instance — do not restructure wireRelay,
+        // just resolve on whichever event lands first. wireRelay's own onRoom runs
+        // before this one (subscribed earlier), so inviteUrlStr is set by the time
+        // we read it. onClose covers a dead/vetoed relay so `go` can't hang 15s.
+        return await new Promise((resolve) => {
+          let done = false;
+          let offRoom, offRefused, offClose, timer;
+          const finish = (v) => {
+            if (done) return;
+            done = true;
+            offRoom?.();
+            offRefused?.();
+            offClose?.();
+            clearTimeout(timer);
+            resolve(v);
+          };
+          offRoom = relay.onRoom((code) => finish({ ok: true, room: code, inviteUrl: inviteUrlStr ?? inviteRoomUrl(code) }));
+          offRefused = relay.onRefused((reason) => finish({ ok: false, error: `relay refused (${reason})` }));
+          offClose = relay.onClose(() => finish({ ok: false, error: relayVetoed ? 'relay refused the connection' : 'relay unavailable' }));
+          timer = setTimeout(() => finish({ ok: false, error: 'relay timeout' }), 15000);
+          timer.unref?.();
+        });
+      },
+      // Stop sharing: end the room, tear down the relay, clear the links + room file,
+      // drop the band (repaint), and let a later `go` dial again. Idempotent.
+      off: async () => {
+        if (state.room || relay) {
+          const r = relay;
+          relay = null; // null first so the instance's onClose sees r !== relay (no reconnect)
+          try {
+            r?.end();
+          } catch {}
+          try {
+            r?.close();
+          } catch {}
+          state.setRoom(null);
+          currentUrl = null;
+          inviteUrlStr = null;
+          clearRoomFile(roomFile);
+          wantLive = false;
+          goLiveStarted = false;
+          repaintBand(); // band disappears; the child reclaims the row
+        }
+        return { ok: true };
+      },
+      // Query without changing anything. inviteUrl only — never the host URL/token.
+      status: async () => ({
+        ok: true,
+        live: !!state.room,
+        room: state.room ?? undefined,
+        inviteUrl: inviteUrlStr ?? undefined,
+      }),
+    },
+  });
+
   // ── hook events → brain ───────────────────────────────────────────────────────
   if (hooks) {
     hooks.on('busy', () => {
@@ -1382,6 +1462,9 @@ async function main() {
     } catch {}
     try {
       hooks?.close();
+    } catch {}
+    try {
+      ctl?.close(); // close the control socket and unlink its file
     } catch {}
     for (const f of [settingsFile, socketPath]) {
       if (f) {

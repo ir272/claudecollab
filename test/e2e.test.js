@@ -26,8 +26,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { connect as netConnect } from 'node:net';
 import ssh2 from 'ssh2';
 import * as ptyNs from 'node-pty';
 import { WebSocket } from 'ws';
@@ -551,4 +552,142 @@ test('e2e: lazy start — no --live dials no relay, creates no room, paints no b
   assert.ok(live.sink.get().includes(ORANGE), '--live paints the status band');
   // The lazy host STILL has no room and no band — going live is per-process.
   assert.ok(!lazy.sink.get().includes(ORANGE), 'the lazy host stays band-free while another host goes live');
+});
+
+// One control-socket request → its single reply line, parsed. Exactly what the
+// wrapped Claude's `collab go` does (a net client speaking JSON-lines).
+function ctlAsk(sockPath, req, ms = 20000) {
+  return new Promise((resolve, reject) => {
+    const conn = netConnect(sockPath, () => conn.write(JSON.stringify(req) + '\n'));
+    let buf = '';
+    const timer = setTimeout(() => {
+      conn.destroy();
+      reject(new Error('ctl: no reply'));
+    }, ms);
+    conn.on('data', (d) => {
+      buf += d.toString('utf8');
+      const nl = buf.indexOf('\n');
+      if (nl !== -1) {
+        clearTimeout(timer);
+        conn.end();
+        try {
+          resolve(JSON.parse(buf.slice(0, nl)));
+        } catch (err) {
+          reject(err);
+        }
+      }
+    });
+    conn.on('error', reject);
+  });
+}
+
+test('e2e: control socket — go creates the room (invite only, no token), status reports live, off closes it', { timeout: 120000 }, async (t) => {
+  const ORANGE = '\x1b[38;5;214m'; // the band's status-line color — nothing else emits it
+
+  const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey(), hostName: 'ian' });
+  t.after(() => relay.close());
+  const { port, webPort } = relay;
+
+  const workDir = mkdtempSync(join(tmpdir(), 'cs-ctl-work-'));
+  const homeDir = mkdtempSync(join(tmpdir(), 'cs-ctl-home-'));
+  const binDir = mkdtempSync(join(tmpdir(), 'cs-ctl-bin-'));
+  t.after(() => {
+    for (const d of [workDir, homeDir, binDir]) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {}
+    }
+  });
+  const shim = join(binDir, 'claude');
+  writeFileSync(shim, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeClaude)} "$@"\n`, { mode: 0o755 });
+
+  // A LAZY host (no --live): the socket, not startup, is what takes it live.
+  const host = makeSink();
+  const cli = ptySpawn(
+    process.execPath,
+    [cliEntry, '--relay', `ssh://127.0.0.1:${port}`, '--web-port', String(webPort), '--guests', 'viewer'],
+    {
+      name: 'xterm-256color',
+      cols: 200,
+      rows: 50,
+      cwd: workDir,
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' },
+    },
+  );
+  cli.onData((d) => host.feed(d));
+  t.after(() => {
+    try {
+      cli.kill();
+    } catch {}
+  });
+
+  await host.waitFor('fake-claude ready', 60000);
+  assert.equal(relay.roomCount(), 0, 'lazy: nothing dialed yet');
+
+  const sock = join(tmpdir(), `claude-share-ctl-${cli.pid}.sock`);
+  for (let i = 0; i < 100 && !existsSync(sock); i++) await delay(50);
+  assert.ok(existsSync(sock), 'the control socket exists (CLAUDE_SHARE_CTL)');
+  assert.equal(statSync(sock).mode & 0o777, 0o600, 'the control socket is same-user only (0600)');
+
+  // status BEFORE go → not live.
+  const before = await ctlAsk(sock, { v: 1, t: 'status' });
+  assert.deepEqual(before, { ok: true, live: false }, 'status pre-go: not live, no room/url fields');
+
+  // a wrong protocol version is refused.
+  const badV = await ctlAsk(sock, { v: 2, t: 'status' });
+  assert.deepEqual(badV, { ok: false, error: 'version' }, 'the socket version-gates every request');
+
+  // go → the room is created; the reply carries room + inviteUrl and NEVER the token.
+  const go = await ctlAsk(sock, { v: 1, t: 'go' });
+  assert.equal(go.ok, true, `go succeeded (${JSON.stringify(go)})`);
+  assert.ok(go.room, 'go reply carries the room code');
+  assert.ok(go.inviteUrl && go.inviteUrl.includes(go.room), 'go reply carries the invite URL');
+  assert.ok(!go.inviteUrl.includes('host='), 'the invite URL has no host token');
+
+  // the band appeared once live, and it shows the host URL (with the token) on the
+  // host TERMINAL only — grab that token to prove it never crossed the socket.
+  await host.waitFor(ORANGE, 15000);
+  await host.waitFor('?host=', 15000);
+  const token = host.get().match(/\?host=([0-9a-f]+)/)[1];
+  assert.ok(!JSON.stringify(go).includes(token), 'the host token never crosses the control socket');
+
+  // the room file was written with the same invite-only shape.
+  const roomFile = join(tmpdir(), `claude-share-room-${cli.pid}.json`);
+  for (let i = 0; i < 100 && !existsSync(roomFile); i++) await delay(50);
+  assert.ok(existsSync(roomFile), 'the room file exists while live');
+  const rf = readFileSync(roomFile, 'utf8');
+  assert.ok(!rf.includes('host=') && !rf.includes(token), 'the room file never carries the token');
+
+  // go again → idempotent (same room, no second dial).
+  const goAgain = await ctlAsk(sock, { v: 1, t: 'go' });
+  assert.equal(goAgain.room, go.room, 'go is idempotent while live');
+  assert.equal(relay.roomCount(), 1, 'no second room was created');
+
+  // status while live.
+  const live = await ctlAsk(sock, { v: 1, t: 'status' });
+  assert.equal(live.ok, true);
+  assert.equal(live.live, true, 'status: live');
+  assert.equal(live.room, go.room, 'status carries the room');
+  assert.ok(!live.inviteUrl.includes('host='), 'status invite URL has no token');
+
+  // off → the room closes, the file is removed, and the relay drops the room.
+  const off = await ctlAsk(sock, { v: 1, t: 'off' });
+  assert.deepEqual(off, { ok: true }, 'off acknowledges');
+  for (let i = 0; i < 100 && existsSync(roomFile); i++) await delay(50);
+  assert.ok(!existsSync(roomFile), 'the room file is gone after off');
+  for (let i = 0; i < 100 && relay.roomCount() !== 0; i++) await delay(50);
+  assert.equal(relay.roomCount(), 0, 'off closes the room on the relay');
+
+  // a guest connecting to the now-dead code is told there is no such room.
+  const late = await connectGuest(port, { code: go.room, privateKey: newKey() });
+  t.after(() => {
+    try {
+      late.client.end();
+    } catch {}
+  });
+  await late.waitFor('no room', 15000);
+
+  // status after off → not live again.
+  const after = await ctlAsk(sock, { v: 1, t: 'status' });
+  assert.deepEqual(after, { ok: true, live: false }, 'status post-off: back to not live');
 });
