@@ -662,6 +662,9 @@ export function startRelay(opts = {}) {
           address,
           webPort: web ? web.port : null,
           webAddress: web ? web.address : null,
+          // How many rooms are currently live. Lets a caller assert that a lazy host
+          // (one started without --live) dialed nothing and created no room.
+          roomCount: () => live.size,
         });
       };
       // The browser door shares this relay's live rooms + registry, so web

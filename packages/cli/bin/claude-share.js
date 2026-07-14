@@ -28,6 +28,8 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
+import { startCtl } from '../src/ctl.js';
+import { ctlMain } from '../src/ctl-client.js';
 import { writeRoomFile, clearRoomFile } from '../src/room-file.js';
 import { paint, ROLE_GLYPH } from '../src/renderer.js';
 import { ScreenSnapshot } from '../src/screen-snapshot.js';
@@ -50,6 +52,11 @@ import { foldKnock } from '../src/brain/knocks.js';
 function parseArgs(argv) {
   const opts = {
     relay: true,
+    // Lazy by default (spec phase 5a): a fresh `collab` starts pixel-identical to
+    // plain claude and does NOT dial the relay until go-live (`collab go`). --live
+    // restores the old behavior — dial at startup — for rigs, tests, and anyone who
+    // wants a room immediately. --no-relay still means never share.
+    live: false,
     // Default to the community relay so a fresh `collab` needs zero setup; dev
     // rigs and tests always pass --relay explicitly (ssh://127.0.0.1:2222).
     relayUrl: 'ssh://claudecollab.org:2222',
@@ -69,6 +76,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--no-relay') opts.relay = false;
+    else if (a === '--live') opts.live = true;
     else if (a === '--relay') opts.relayUrl = argv[++i] ?? opts.relayUrl;
     else if (a === '--no-hooks') opts.hooks = false;
     else if (a === '--web-port') opts.webPort = Math.max(1, Number(argv[++i]) || opts.webPort);
@@ -125,6 +133,14 @@ async function main() {
   // row. Claude gets every other row; the child PTY is resized to rows-1 each repaint.
   const BAND_ROWS = 1;
   const multiplayer = opts.relay; // the guest composer/gate + mirror are active only when sharing
+  // Lazy sharing (spec phase 5a): pre-live, the wrapper is pixel-identical to plain
+  // claude — the relay is not dialed and the band paints ZERO rows, so the child owns
+  // every terminal row. wantLive flips exactly once, at go-live (--live at startup, or
+  // `collab go` over the control socket). isLive() gates every sharing-shaped behavior
+  // (band height, the shared-size clamp); bandRows() is the one height source.
+  let wantLive = opts.live;
+  const isLive = () => multiplayer && wantLive;
+  const bandRows = () => (isLive() ? BAND_ROWS : 0);
   // The host's browser tab authenticates with this token: it knocks with fingerprint
   // `webhost:<token>:<seat>`, and the brain auto-admits it as host. The token goes in
   // the room URL we print/copy; the SEAT does not — the browser mints it locally, so
@@ -136,6 +152,11 @@ async function main() {
   // detectable; the file only EXISTS while a room is live (written on grant/reclaim,
   // removed on gone/give-up/exit). Whitelisted: the host token never reaches it.
   const roomFile = path.join(os.tmpdir(), `claude-share-room-${process.pid}.json`);
+  // The control socket the wrapped Claude drives with `collab go|off|status` (spec
+  // phase 5a). Its PATH is exported as CLAUDE_SHARE_CTL for every spawn; the socket
+  // itself is created below (0600, same-user only) and unlinked in cleanup(). The
+  // host URL/token NEVER crosses it — replies carry room + inviteUrl only.
+  const ctlPath = path.join(os.tmpdir(), `claude-share-ctl-${process.pid}.sock`);
   // The seat this session is bound to: the first host browser's seat secret claims
   // it; later browsers presenting the token with a different/absent seat are refused
   // (leaked-link defense). Reset by a host-terminal Ctrl-G handoff (see below).
@@ -198,6 +219,7 @@ async function main() {
   // text is dropped (drafts are created explicitly — never by stray typing).
   const nudgedAt = new Map();
   let relay = null;
+  let ctl = null; // the control-socket server (started below; closed in cleanup)
   let exited = false;
   // Reconnect-with-reclaim state (spec §failure-behavior: the relay holds the code
   // 10 min after a host drop). On a lost connection we reconnect and RECLAIM the
@@ -233,7 +255,7 @@ async function main() {
     // CLAUDE_SHARE_ROOM_FILE is set for EVERY spawn, solo included: its presence
     // tells the child it's running under collab; the file at that path appears only
     // once a room is live (phase 5's skill relies on that live-vs-not distinction).
-    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: BAND_ROWS, env: { CLAUDE_SHARE_ROOM_FILE: roomFile } });
+    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: bandRows(), env: { CLAUDE_SHARE_ROOM_FILE: roomFile, CLAUDE_SHARE_CTL: ctlPath } });
   } catch (err) {
     process.stderr.write(
       `collab: could not start "${opts.cmd}": ${err.message}\n` +
@@ -288,7 +310,9 @@ async function main() {
   // the mirror letterboxed until the first guest join reshaped it.
   // Solo with no tab there is no shared view, so we use the host's own terminal.
   const viewSize = () => {
-    if (!multiplayer) return { cols: stdout.columns || 80, rows: stdout.rows || 24 };
+    // Pre-live (and solo) the child owns the real terminal exactly — no floor clamp,
+    // no resize theft. The shared-size clamp only governs once we are actually live.
+    if (!isLive()) return { cols: stdout.columns || 80, rows: stdout.rows || 24 };
     let { cols, rows } = state.clamp();
     for (const s of hostTabSizes.values()) {
       cols = Math.min(cols, s.cols);
@@ -383,7 +407,7 @@ async function main() {
   // Claude's region is resized to rows-1 so the line can never overlap its output.
   const repaintBand = () => {
     const { cols, rows } = viewSize();
-    const band = BAND_ROWS;
+    const band = bandRows(); // 0 pre-live (paint() no-ops, child keeps every row), 1 once live
 
     // Keep Claude's region to exactly the rows the band does not occupy, at the
     // shared width — resize the child only when that actually changes.
@@ -1053,7 +1077,13 @@ async function main() {
   // identically. Handlers use their own instance `r` for replies, so a stale
   // instance can never write to (or resurrect) a superseded connection.
   function wireRelay(r) {
+    // A superseded instance (off() tore it down mid-dial, or a reconnect replaced
+    // it) must never mutate room state: a stale late ROOM grant would resurrect a
+    // session the user just turned off, and a stale REFUSED would veto future gos.
+    // onClose below already carries the same guard.
+    const current = () => r === relay;
     r.onRoom((code, webUrl) => {
+      if (!current()) return;
       reconnectAttempts = 0;
       publicBase = webUrl || null; // a deployed relay's public https origin (or none)
       const reclaimed = state.room === code; // we already held this exact code → reclaim
@@ -1073,6 +1103,7 @@ async function main() {
       copyInvite(inviteRoomUrl(code), (copied) => showToast(readyToast(copied), 15000));
     });
     r.onGone(() => {
+      if (!current()) return;
       // Reclaim refused: the 10-min TTL lapsed, the relay restarted (fresh
       // registry), or the room truly ended. Nothing to return to — drop the code
       // AND its links (a dead URL on the band reads as a live room), finish solo.
@@ -1084,6 +1115,7 @@ async function main() {
       repaintBand();
     });
     r.onRefused((reason) => {
+      if (!current()) return;
       // The relay rejected our HELLO outright. 'secret' = it requires a room
       // secret we didn't present (or ours is wrong); 'version' = it speaks a newer
       // protocol than we do (update the CLI). Terminal, not transient.
@@ -1211,7 +1243,9 @@ async function main() {
   // CLI was missing. Failures on a held room retry within the TTL; an initial
   // failure just runs solo.
   function openRelay() {
-    if (exited || relayVetoed) return;
+    // wantLive is the invariant: only a live-intending session may dial. Guards any
+    // stray timer/callback that survives an off() teardown (belt to off's braces).
+    if (exited || relayVetoed || !wantLive) return;
     // Fresh pin check per attempt (it re-reads the store, picking up a pin the
     // previous attempt just made). null = loopback dev relay, no verification.
     const pin =
@@ -1278,7 +1312,108 @@ async function main() {
     reconnectTimer.unref?.();
   }
 
-  if (opts.relay) openRelay();
+  // Go live on demand: dial the relay and flip wantLive so the band appears and the
+  // child shrinks by one row (via repaintBand's resize path). Idempotent — the guard
+  // makes it callable exactly once, whether from --live at startup or `collab go`
+  // mid-session over the control socket. --no-relay can never go live.
+  let goLiveStarted = false;
+  function goLive() {
+    if (goLiveStarted || exited || !opts.relay) return;
+    goLiveStarted = true;
+    wantLive = true;
+    openRelay();
+    repaintBand(); // band appears; the child is resized to rows-1
+  }
+  if (opts.relay && opts.live) goLive();
+
+  // ── control socket: `collab go|off|status` drives the room lifecycle ──────────
+  // The wrapped Claude connects here (CLAUDE_SHARE_CTL) to go live / stop / query
+  // WITHOUT restarting. Replies carry room + inviteUrl only — never the host URL or
+  // token (those stay on the host's own terminal / room file whitelist).
+  ctl = startCtl({
+    path: ctlPath,
+    handlers: {
+      // Go live: apply any valid overrides, dial the relay, and resolve on the FIRST
+      // of room-granted / relay-refused / 15s timeout. Idempotent when already live.
+      go: async (req) => {
+        if (!opts.relay) return { ok: false, error: 'sharing disabled (--no-relay)' };
+        if (state.room) return { ok: true, room: state.room, inviteUrl: inviteUrlStr ?? undefined };
+        // Overrides (each validated; a bad value is ignored so the current setting stands).
+        if (req.guests === 'viewer' || req.guests === 'prompter') opts.guests = req.guests;
+        if (Number.isFinite(req.max) && Math.floor(req.max) > 0) opts.cap = Math.floor(req.max);
+        if (typeof req.pass === 'string' && req.pass.length) opts.roomPassword = req.pass;
+        goLive();
+        if (!relay) return { ok: false, error: 'sharing unavailable' };
+        // One-shot waiter over the live relay instance — do not restructure wireRelay,
+        // just resolve on whichever event lands first. wireRelay's own onRoom runs
+        // before this one (subscribed earlier), so inviteUrlStr is set by the time
+        // we read it. onClose covers a dead/vetoed relay so `go` can't hang 15s.
+        return await new Promise((resolve) => {
+          let done = false;
+          let offRoom, offRefused, offClose, timer;
+          const finish = (v) => {
+            if (done) return;
+            done = true;
+            offRoom?.();
+            offRefused?.();
+            offClose?.();
+            clearTimeout(timer);
+            resolve(v);
+          };
+          offRoom = relay.onRoom((code) => finish({ ok: true, room: code, inviteUrl: inviteUrlStr ?? inviteRoomUrl(code) }));
+          offRefused = relay.onRefused((reason) => finish({ ok: false, error: `relay refused (${reason})` }));
+          offClose = relay.onClose(() => finish({ ok: false, error: relayVetoed ? 'relay refused the connection' : 'relay unavailable' }));
+          timer = setTimeout(() => finish({ ok: false, error: 'relay timeout' }), 15000);
+          timer.unref?.();
+        });
+      },
+      // Stop sharing: end the room, tear down the relay, clear the links + room file,
+      // drop the band (repaint), and let a later `go` dial again. Idempotent.
+      off: async () => {
+        if (state.room || relay) {
+          const r = relay;
+          relay = null; // null first so the instance's onClose sees r !== relay (no reconnect)
+          try {
+            r?.end();
+          } catch {}
+          try {
+            r?.close();
+          } catch {}
+          // Disarm any pending reclaim: a reconnect timer left ticking would dial
+          // openRelay() after this teardown and HELLO a brand-new room with the band
+          // hidden — an invisibly-live room, the one thing off() must make impossible.
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+          reconnectAttempts = 0;
+          state.setRoom(null);
+          currentUrl = null;
+          inviteUrlStr = null;
+          clearRoomFile(roomFile);
+          wantLive = false;
+          goLiveStarted = false;
+          // Purge every participant footprint — the process now OUTLIVES the room, so
+          // stale guests would haunt the next go (wrong count, crushed size clamp,
+          // orphaned drafts/queue items). forgetGuest also logs each departure.
+          for (const g of [...state.guests()]) forgetGuest(g.id);
+          pendingKnocks = [];
+          knockInfo.clear();
+          pointers.clear();
+          hostTabIds.clear();
+          hostTabSizes.clear();
+          guestPartitioners.clear();
+          repaintBand(); // band disappears; the child reclaims the row
+        }
+        return { ok: true };
+      },
+      // Query without changing anything. inviteUrl only — never the host URL/token.
+      status: async () => ({
+        ok: true,
+        live: !!state.room,
+        room: state.room ?? undefined,
+        inviteUrl: inviteUrlStr ?? undefined,
+      }),
+    },
+  });
 
   // ── hook events → brain ───────────────────────────────────────────────────────
   if (hooks) {
@@ -1354,6 +1489,9 @@ async function main() {
     } catch {}
     try {
       hooks?.close();
+    } catch {}
+    try {
+      ctl?.close(); // close the control socket and unlink its file
     } catch {}
     for (const f of [settingsFile, socketPath]) {
       if (f) {
@@ -1446,9 +1584,14 @@ async function main() {
 // `collab relay [args]` IS the relay (single-bin: npx resolves one bin). serve.js
 // runs on import and reads process.argv — splice ours out so its args line up.
 let run;
-if (process.argv[2] === 'relay') {
+const sub = process.argv[2];
+if (sub === 'relay') {
   process.argv.splice(2, 1);
   run = import('../../relay/bin/serve.js');
+} else if (sub === 'go' || sub === 'off' || sub === 'status') {
+  // Run INSIDE a wrapped session: drive it via the control socket (CLAUDE_SHARE_CTL)
+  // and print a human-readable result. ctlMain owns its own exit code.
+  run = ctlMain(sub, process.argv.slice(3));
 } else {
   run = main();
 }

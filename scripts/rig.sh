@@ -17,5 +17,5 @@ printf '#!/bin/sh\nexec %s %s "$@"\n' "$(command -v node)" "$(pwd)/test/fixtures
 chmod +x /tmp/cs-rig-shim/claude
 export PATH="/tmp/cs-rig-shim:$PATH"
 export CLAUDE_SHARE_NO_CLIPBOARD=1
-node packages/cli/bin/claude-share.js --relay ssh://127.0.0.1:2226 --web-port 8788
+node packages/cli/bin/claude-share.js --live --relay ssh://127.0.0.1:2226 --web-port 8788
 kill $RELAY_PID 2>/dev/null

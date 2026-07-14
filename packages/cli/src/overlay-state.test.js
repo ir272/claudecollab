@@ -122,7 +122,7 @@ test('overlay-state: host emits state; ui admit / pointer / ui command (gated) r
 
   const cli = spawn(
     process.execPath,
-    [cliEntry, '--relay', `ssh://127.0.0.1:${relay.port}`, '--no-hooks', '--cmd', 'cat', '--guests', 'prompter'],
+    [cliEntry, '--live', '--relay', `ssh://127.0.0.1:${relay.port}`, '--no-hooks', '--cmd', 'cat', '--guests', 'prompter'],
     { env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' } },
   );
   let stderr = '';
@@ -198,7 +198,7 @@ test('overlay-state: a paused room freezes a prompter’s crafted {ui,command} p
 
   const cli = spawn(
     process.execPath,
-    [cliEntry, '--relay', `ssh://127.0.0.1:${relay.port}`, '--no-hooks', '--cmd', 'cat', '--guests', 'prompter'],
+    [cliEntry, '--live', '--relay', `ssh://127.0.0.1:${relay.port}`, '--no-hooks', '--cmd', 'cat', '--guests', 'prompter'],
     { env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, CLAUDE_SHARE_NO_CLIPBOARD: '1' } },
   );
   let stderr = '';

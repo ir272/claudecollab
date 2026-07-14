@@ -7,7 +7,7 @@
 (you run Claude)  <-->  (passes messages)   <-->  (open a link)
 ```
 
-Your terminal looks like normal Claude, just one extra line at the bottom. All the sharing happens in the web browser.
+Before you go live, your terminal is *exactly* normal Claude — nothing added. The moment you go live, one status line shows up at the bottom, and all the sharing itself happens in the web browser.
 
 ## Start a session
 
@@ -20,10 +20,38 @@ collab
 
 The first npx run downloads for ~10–20 seconds; after that it's fast.
 
-That's it. Run `collab` instead of `claude`. It works the same, but now it makes two links:
+Run `collab` instead of `claude`. It looks and works **exactly** like Claude — because at this point it *is* just Claude. It is not sharing anything yet. You go live only when you decide to.
 
-- A **private link** — that's your control panel (you let people in and manage them).
-- A **share link** — this one gets copied for you. Send it to your friends.
+## Go live with `/collab`
+
+One-time setup — add the `/collab` command to Claude:
+
+```
+/plugin marketplace add ir272/claudecollab
+/plugin install collab@claudecollab
+```
+
+After that, whenever you want people to join, just type this inside your session:
+
+```
+/collab
+```
+
+Claude opens a room and hands you the invite link to share. A few handy shortcuts:
+
+- `/collab @sam` — go live *and* DM the link to Sam (if you have a messaging tool like Slack connected).
+- `/collab viewer` or `/collab max 3` or `/collab password hunter2` — set the guest role, a size limit, or a join password.
+- `/collab off` — stop sharing. The room closes and the link dies.
+- `/collab status` — check whether you're live and see the link again.
+
+Prefer to be live the second you start (no plugin needed)? Run `collab --live` and it makes the room right away. `collab off` stops it.
+
+### The two links
+
+Once you're live you get two links — **don't mix them up**:
+
+- A **private link** — your control panel (you let people in and manage them). Stays on your own screen.
+- A **share link** — this is the one you send. `/collab` prints it and the Invite button copies it.
 
 Your friends just open the share link in a browser. They don't install anything.
 
@@ -93,7 +121,8 @@ Two safety features come built in:
 | Option | What it does |
 |---|---|
 | `--relay <url>` | which server to use; defaults to ours |
-| `--no-relay` | go solo — just Claude, no room, no sharing |
+| `--live` | go live at startup instead of waiting for `/collab` |
+| `--no-relay` | go solo — just Claude, no room, no sharing (and no `/collab`) |
 | `--room-password <pw>` | friends must type this before they can ask to join |
 | `--guests <role>` | what new people can do when let in (default: prompter) |
 | `--secret <s>` | the password for a locked server (or use `CLAUDE_SHARE_SECRET`) |

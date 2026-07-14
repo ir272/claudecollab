@@ -1,0 +1,13 @@
+{
+  "name": "claudecollab",
+  "owner": {
+    "name": "ir272"
+  },
+  "plugins": [
+    {
+      "name": "collab",
+      "source": "./plugin",
+      "description": "Go live and share this Claude Code session from inside it: start a room, print the invite link, and optionally DM it to a teammate."
+    }
+  ]
+}
