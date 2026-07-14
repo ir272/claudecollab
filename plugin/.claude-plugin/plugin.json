@@ -1,0 +1,6 @@
+{
+  "name": "collab",
+  "description": "Share a live Claude Code session on demand: /collab goes live, prints the invite link, and can DM it to a teammate.",
+  "version": "0.1.0",
+  "homepage": "https://claudecollab.org"
+}
