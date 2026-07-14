@@ -55,17 +55,17 @@ export function parseLocation(loc) {
 
 /**
  * Build the `/ws` query the web door expects. A host tab carries `host`; a guest
- * carries its browser `token` (returning identity), claimed `name`, and — for a
- * passworded room — the join password `pass` (host tabs never need one).
+ * carries its browser `token` (returning identity) and claimed `name`.
+ * The room password NEVER rides the URL — it is sent as the first WS message in
+ * reply to the relay's {t:'pass?'} challenge (proxy/access-log/history leak fix).
  * @returns {string} e.g. "/ws?room=brave-otter&name=sid&token=abc"
  */
-export function buildWsPath({ code, name, token, hostToken, pass, seat } = {}) {
+export function buildWsPath({ code, name, token, hostToken, seat } = {}) {
   const q = new URLSearchParams();
   if (code) q.set('room', code);
   if (name) q.set('name', name);
   if (hostToken) q.set('host', hostToken);
   else if (token) q.set('token', token);
-  if (pass && !hostToken) q.set('pass', pass);
   // The host-seat secret binds the host seat to THIS browser (leaked-link defense):
   // it never rides the shareable URL — the browser mints it and keeps it locally —
   // so a stolen host link opened elsewhere presents a different seat and is refused.
@@ -563,6 +563,7 @@ function main() {
   };
 
   let sentPass = null; // what the last attempt presented (drives the fail() copy)
+  let pendingPass = ''; // the password to send when the relay challenges with {t:'pass?'}
 
   function beginKnock() {
     const code = (loc.code || codeInput.value || '').trim();
@@ -588,6 +589,9 @@ function main() {
 
   // ── connection ───────────────────────────────────────────────────────────────
   function connect({ code, name, token, hostToken, pass, seat }) {
+    // Stash the password to answer the relay's {t:'pass?'} challenge — it rides the
+    // wire, never the URL. Host tabs never present one.
+    pendingPass = hostToken ? '' : pass || '';
     // Supersede any previous socket COMPLETELY. A zombie from an earlier attempt
     // still has live handlers — when the brain dedupes its knock, its deny/close
     // would splash "declined" into a UI that belongs to the NEW attempt.
@@ -605,7 +609,7 @@ function main() {
       ? 'Opening your room…'
       : `Waiting for the host to let you in…`;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = proto + '//' + location.host + buildWsPath({ code, name, token, hostToken, pass, seat });
+    const url = proto + '//' + location.host + buildWsPath({ code, name, token, hostToken, seat });
     let sock;
     try {
       sock = new WebSocket(url);
@@ -648,6 +652,12 @@ function main() {
     }
     if (!msg || typeof msg !== 'object') return;
     switch (msg.t) {
+      case 'pass?':
+        // The relay is challenging for the room password over the wire (never the
+        // URL). Answer with the stored/typed value; a wrong/empty one comes back as
+        // an {t:'error',reason:'password'} that reveals the field.
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'pass', pass: pendingPass }));
+        break;
       case 'joined':
         // A host tab IS the host (the brain maps it to HOST_ID and never adds it as a
         // second participant — finding 4), so adopt the host's roster identity: the
