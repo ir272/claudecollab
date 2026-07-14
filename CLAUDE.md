@@ -112,22 +112,29 @@ DONE this pass:
   HOST TERMINAL releases the seat. e2e proves a stolen-link seat is refused.
 - **Honest docs** — README no longer says "kicked out for good" / "stores nothing".
 
-DEFERRED BY IAN'S CHOICE ("we don't need all that security — password + admit/deny
-is the model") — revisit only if the threat model changes:
+SHIPPED 2026-07-14 (0.1.4, PR #3 — pre-launch community-relay hardening):
+- Fly proxy client IP: web door trusts `Fly-Client-IP` for per-IP knock limits,
+  gated on `CLAUDE_SHARE_TRUST_PROXY=1` (OPS PENDING: set the secret before the
+  next fly deploy or the fix is inert in prod). ssh-door PROXY protocol still
+  deferred — browsers are the stranger surface.
+- Room password no longer rides the WS URL: relay challenges `{t:'pass?'}`, client
+  answers as its first WS frame (still in localStorage by choice).
+- Pending knocks capped at 12/room (both doors) — card-spam lid.
+- Prompts/names escape-sanitized at display boundaries (join card, log, session.md)
+  via `stripControls` in brain/log.js; pty-bound text stays raw.
+- `/end nosave` (browser "Just end") skips session.md; bare `/end` still saves.
+
+STILL DEFERRED BY IAN'S CHOICE — revisit only if the threat model changes:
 - Durable bans: kicked web guests rejoin via new token/incognito/new network;
   keyless-ssh kicked guests reconnect. No account system to bind to.
-- Flood caps: protocol decoder only caps newline-free buffers, so a huge COMPLETE
-  json line (giant key/ui/state payload) is parsed unbounded; pending-knock spam
-  can flood the host with cards without hitting the room cap.
-- Fly proxy client IP: knock lockout uses req.socket.remoteAddress = Fly's proxy,
-  not the real client — per-IP limits misbehave in prod (need X-Forwarded-For).
-- Room password rides the WS query string + localStorage (history/proxy leak).
+- Giant COMPLETE json line: decoder only caps newline-free buffers, so a huge
+  single-line key/ui/state payload is parsed unbounded.
 
-KNOWN BUGS NOT YET FIXED (not security; surfaced by codex — decide next):
-- `/end` always writes session.md even on the browser's "Just end" (overwrites an
-  existing session.md when the host chose NOT to save). claude-share.js ~695.
-- Bracketed-paste text isn't escape-sanitized before landing in join cards /
-  session.md — a pasted prompt could inject terminal escapes. drafts.js/card.js.
+RELEASE POLICY (2026-07-14): PR per phase merges to main, but npm publishes ONCE
+at launch (as 0.2.0) — no external users pre-launch. Fly deploys only for
+relay-touching phases, batched when convenient. The open-source launch arc's
+spec/plans live in docs/superpowers/ — LOCAL AND UNTRACKED by Ian's choice
+(never commit specs/plans).
 
 ## Machine-local cleanup owed (Ian's old Mac)
 
