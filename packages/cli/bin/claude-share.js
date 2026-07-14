@@ -28,6 +28,7 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import ssh2 from 'ssh2';
 import { startPty } from '../src/pty.js';
+import { stripShimDir } from '../src/shim.js';
 import { startCtl } from '../src/ctl.js';
 import { ctlMain } from '../src/ctl-client.js';
 import { writeRoomFile, clearRoomFile } from '../src/room-file.js';
@@ -255,7 +256,13 @@ async function main() {
     // CLAUDE_SHARE_ROOM_FILE is set for EVERY spawn, solo included: its presence
     // tells the child it's running under collab; the file at that path appears only
     // once a room is live (phase 5's skill relies on that live-vs-not distinction).
-    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: bandRows(), env: { CLAUDE_SHARE_ROOM_FILE: roomFile, CLAUDE_SHARE_CTL: ctlPath } });
+    const childEnv = { CLAUDE_SHARE_ROOM_FILE: roomFile, CLAUDE_SHARE_CTL: ctlPath };
+    // Recursion guard: when the wrapped command is `claude`, strip the shim dir from
+    // the child's PATH so it resolves to the REAL claude, never back to the shim that
+    // execs us (stripShimDir is spike-proven; see src/shim.js). Any other --cmd keeps
+    // PATH untouched.
+    if (opts.cmd === 'claude') childEnv.PATH = stripShimDir(process.env.PATH, os.homedir());
+    pty = await startPty({ cmd: opts.cmd, args: childArgs, bandRows: bandRows(), env: childEnv });
   } catch (err) {
     process.stderr.write(
       `collab: could not start "${opts.cmd}": ${err.message}\n` +
