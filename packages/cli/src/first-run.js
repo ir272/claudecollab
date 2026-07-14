@@ -15,6 +15,18 @@ export const DEFAULT_CONNECTORS = [
   { key: 'discord', label: 'Discord', hint: 'DM it to a friend', checked: false },
 ];
 
+// ── styling (the approved mock's visual layer: orange accent = the band's color,
+// green ✓, dim grays, a highlighted selection row, kbd chips). NO_COLOR disables
+// every code; the words themselves never change — tests match on stripped text.
+const useColor = !process.env.NO_COLOR;
+const sgr = (code, s) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
+const o = (s) => sgr('1;38;5;214', s); // orange, bold — the band accent
+const g = (s) => sgr('1;32', s); // green — the "already done" checkmark
+const d = (s) => sgr('38;5;245', s); // dim gray — secondary copy
+const b = (s) => sgr('1', s); // bold
+const chip = (s) => (useColor ? `\x1b[48;5;236m\x1b[38;5;252m${s}\x1b[0m` : s); // kbd key chip (no padding — stripped text stays byte-equal to the approved copy)
+const selRow = (s) => (useColor ? `\x1b[48;5;236m${s}\x1b[0m` : s); // highlighted picker row
+
 /**
  * Render the first-run screen and drive the picker.
  * @param {object} opts
@@ -31,28 +43,31 @@ export function runFirstRun({ input = process.stdin, output = process.stdout, co
 
   const frame = () => {
     const rows = items.map((it, i) => {
-      const arrow = i === cursor ? '▸' : ' ';
-      const box = it.checked ? '[x]' : '[ ]';
-      return `${arrow} ${box} ${it.label.padEnd(10)}${it.hint}`;
+      const sel = i === cursor;
+      const arrow = sel ? o('▸') : ' ';
+      const box = it.checked ? o('[x]') : '[ ]';
+      const body = ` ${box} ${b(it.label.padEnd(10))}${d(it.hint)} `;
+      return `${arrow}${sel ? selRow(body) : body}`;
     });
     return [
       '',
-      '  ✦ collab — first run',
+      `  ${o('✦ collab')} ${d('— first run')}`,
+      `  ${d('─'.repeat(58))}`,
       '',
-      '  ✓ /collab will be added to Claude Code   (required — it IS the product)',
-      '       claude          ← start like you always do',
-      '       /collab @james  ← the moment you want company',
+      `  ${g('✓')} /collab will be added to Claude Code   ${d('(required — it IS the product)')}`,
+      `       ${b('claude')}          ${d('← start like you always do')}`,
+      `       ${b('/collab @james')}  ${d('← the moment you want company')}`,
       '',
-      '  optional: let /collab @name deliver your join link for you.',
-      "  it sends through YOUR accounts, using Claude's connectors. pick any:",
+      `  ${d('optional: let /collab @name deliver your join link for you.')}`,
+      `  ${d("it sends through YOUR accounts, using Claude's connectors. pick any:")}`,
       '',
       ...rows,
       '',
-      '  collaborations run through our free server (claudecollab.org).',
-      '  want to run your own? `collab relay` — guide in the README.',
-      '  please consider donating so we can keep this open ♥',
+      `  ${d('collaborations run through our free server (claudecollab.org).')}`,
+      `  ${d('want to run your own? `collab relay` — guide in the README.')}`,
+      `  ${d('please consider donating so we can keep this open')} ${o('♥')}`,
       '',
-      '  ↑↓ move · space toggle · enter start claude',
+      `  ${chip('↑↓')} ${d('move ·')} ${chip('space')} ${d('toggle ·')} ${chip('enter')} ${d('start claude')}`,
     ];
   };
 

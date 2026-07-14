@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PassThrough } from 'node:stream';
+import { stripControls } from './brain/log.js';
 import {
   installPlugin,
   installShimAction,
@@ -151,7 +152,8 @@ test('runSetup drives the screen, runs actions, and writes the marker even when 
     input.write('\r'); // accept defaults, start
     const res = await p;
     assert.deepEqual(res, { connectors: ['slack'] });
-    assert.ok(out.includes('✦ collab — first run'), 'the screen was rendered');
+    const clean = stripControls(out); // the screen is ANSI-styled; assert on the words
+    assert.ok(clean.includes('✦ collab — first run'), 'the screen was rendered');
     assert.ok(out.includes("couldn't install the /collab plugin"), 'the plugin failure line was printed');
     assert.ok(out.includes('`claude` is now shareable'), 'the shim success line was printed');
     assert.equal(setupDone(home), true, 'the marker is written even though the plugin action failed');

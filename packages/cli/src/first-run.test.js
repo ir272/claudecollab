@@ -6,11 +6,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import { runFirstRun } from './first-run.js';
+import { stripControls } from './brain/log.js';
 
-// Collect everything written to the injected output.
+// Collect everything written to the injected output. The screen is styled (ANSI
+// color/selection codes), so copy assertions match on the STRIPPED text — the
+// approved words themselves, independent of paint.
 function makeOutput() {
   let buf = '';
-  return { write: (s) => (buf += s), get: () => buf };
+  return { write: (s) => (buf += s), get: () => stripControls(buf) };
 }
 
 test('renders the approved copy — required-core line, all three connectors, donate line', async () => {
