@@ -52,13 +52,16 @@ export function createRegistry(opts = {}) {
     return `${base}-${n}`;
   }
 
-  function create() {
+  // A HELLO may request a room cap; it is clamped to [1, relayCap] so a client
+  // can't ask for more seats than the relay allows. Absent request = the relay cap.
+  function create(o = {}) {
+    const roomCap = Number.isFinite(o.cap) ? Math.max(1, Math.min(cap, Math.floor(o.cap))) : cap;
     const code = makeCode();
     const room = {
       code,
       guests: new Map(), // id -> {name, fp, role}
       banned: new Set(), // banned fingerprints
-      cap,
+      cap: roomCap,
       hostPresent: true,
       createdAt: now(),
       _ttlTimer: null, // pending host-drop close timer

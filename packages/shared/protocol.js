@@ -2,9 +2,15 @@
 // Guests speak no protocol — they exchange raw terminal bytes. Only the host<->relay
 // control channel uses these messages.
 
+// Wire protocol version. Bump on breaking wire changes; the relay refuses NEWER
+// majors with REFUSED reason 'version' (an older/absent v is served — the relay
+// stays backward compatible). One source both sides import.
+export const PROTOCOL_V = 1;
+
 /** Canonical message-type strings (the `t` field of every message). */
 export const TYPES = Object.freeze({
-  HELLO: 'hello', // host->relay: {t:'hello', want:'room', secret?, pass?} — new room (secret = relay
+  HELLO: 'hello', // host->relay: {t:'hello', want:'room', v?, cap?, secret?, pass?} — new room
+  //   (v = protocol version; cap = requested room size, clamped by the relay; secret = relay
   //   room-creation credential; pass = optional per-room JOIN password guests must present)
   RECLAIM: 'reclaim', // host->relay: {t:'reclaim', code}           — take back an existing room after a drop
   ROOM: 'room', // relay->host: {t:'room', code}                    — room granted (create OR reclaim)
@@ -137,8 +143,12 @@ export function validate(obj) {
       // the relay when configured; a plain relay ignores it.
       // pass (optional): a join password for THIS room — the relay stores it and
       // pre-gates every guest (ssh prompt / web form) before the knock is sent.
+      // v/cap (optional): v = the client's protocol version (absent = a
+      // pre-versioning client); cap = a requested room size the relay clamps.
       return (
         obj.want === 'room' &&
+        (obj.v === undefined || isNum(obj.v)) &&
+        (obj.cap === undefined || isNum(obj.cap)) &&
         (obj.secret === undefined || isStr(obj.secret)) &&
         (obj.pass === undefined || isStr(obj.pass))
       );

@@ -61,6 +61,7 @@ function parseArgs(argv) {
     secret: process.env.CLAUDE_SHARE_SECRET || undefined,
     fingerprint: undefined, // explicit relay key pin (SHA256:…); default is TOFU
     roomPassword: undefined, // optional join password guests must present before knocking
+    cap: undefined, // optional requested room size (--max-guests); the relay clamps it
     childArgs: [],
   };
   const passthrough = [];
@@ -75,7 +76,10 @@ function parseArgs(argv) {
     else if (a === '--secret') opts.secret = argv[++i] ?? opts.secret;
     else if (a === '--fingerprint') opts.fingerprint = argv[++i] ?? opts.fingerprint;
     else if (a === '--room-password') opts.roomPassword = argv[++i] ?? opts.roomPassword;
-    else if (a === '--') {
+    else if (a === '--max-guests') {
+      const n = Math.floor(Number(argv[++i]));
+      if (Number.isFinite(n) && n > 0) opts.cap = n; // a bad value is ignored (relay default stands)
+    } else if (a === '--') {
       passthrough.push(...argv.slice(i + 1));
       break;
     } else passthrough.push(a); // unknown flags pass through to the child
@@ -1067,12 +1071,13 @@ async function main() {
     });
     r.onRefused((reason) => {
       // The relay rejected our HELLO outright. 'secret' = it requires a room
-      // secret we didn't present (or ours is wrong). Terminal, not transient.
+      // secret we didn't present (or ours is wrong); 'version' = it speaks a newer
+      // protocol than we do (update the CLI). Terminal, not transient.
       relayVetoed = true;
-      const msg =
-        reason === 'secret'
-          ? 'relay requires a room secret — set CLAUDE_SHARE_SECRET (or --secret) and restart. running solo'
-          : `relay refused the connection (${reason}) — running solo`;
+      let msg;
+      if (reason === 'secret') msg = 'relay requires a room secret — set CLAUDE_SHARE_SECRET (or --secret) and restart. running solo';
+      else if (reason === 'version') msg = 'relay speaks a newer protocol — update with: npm update -g @claudecollab/cli. running solo';
+      else msg = `relay refused the connection (${reason}) — running solo`;
       showToast(msg, 15000);
       repaintBand();
     });
@@ -1206,6 +1211,7 @@ async function main() {
         privateKey: loadHostKey(),
         secret: opts.secret,
         roomPass: opts.roomPassword,
+        cap: opts.cap,
         verifyHostKey: pin ? pin.verify : undefined,
       });
     } catch (err) {
@@ -1421,7 +1427,16 @@ async function main() {
   repaintBand(); // draw the band immediately, before the first frame
 }
 
-main().catch((err) => {
+// `collab relay [args]` IS the relay (single-bin: npx resolves one bin). serve.js
+// runs on import and reads process.argv — splice ours out so its args line up.
+let run;
+if (process.argv[2] === 'relay') {
+  process.argv.splice(2, 1);
+  run = import('../../relay/bin/serve.js');
+} else {
+  run = main();
+}
+run.catch((err) => {
   process.stderr.write(`collab: ${err?.stack || err}\n`);
   process.exit(1);
 });

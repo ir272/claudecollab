@@ -19,7 +19,7 @@ import { createRegistry } from './rooms.js';
 import { secretsMatch } from './auth.js';
 import { startWebDoor } from './web.js';
 import { sanitizeName } from './names.js';
-import { TYPES, encode, validate, Decoder } from '../shared/protocol.js';
+import { TYPES, encode, validate, Decoder, PROTOCOL_V } from '../shared/protocol.js';
 
 const { Server, utils } = ssh2;
 const { parseKey } = utils;
@@ -201,6 +201,15 @@ export function startRelay(opts = {}) {
       switch (msg.t) {
         case TYPES.HELLO: {
           if (code) return; // one room per host connection
+          // Version gate first — the cheapest refusal. A NEWER major than we
+          // speak is refused machine-readably (the CLI tells the user to update);
+          // an older or absent version is served (the relay stays back-compatible).
+          if (msg.v !== undefined && Math.floor(msg.v) > PROTOCOL_V) {
+            safeWrite(stream, encode({ t: TYPES.REFUSED, reason: 'version' }));
+            safeEnd(stream);
+            safeEnd(conn);
+            return;
+          }
           if (roomSecret && !secretsMatch(msg.secret, roomSecret)) {
             // Machine-readable refusal so the CLI can say "bad secret" instead
             // of mistaking this for a dead relay and reconnect-looping.
@@ -216,7 +225,7 @@ export function startRelay(opts = {}) {
             safeEnd(conn);
             return;
           }
-          const room = registry.create();
+          const room = registry.create({ cap: msg.cap });
           code = room.code;
           live.set(code, {
             code,

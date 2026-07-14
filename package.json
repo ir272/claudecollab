@@ -1,6 +1,6 @@
 {
   "name": "@claudecollab/cli",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -9,8 +9,7 @@
   "homepage": "https://claudecollab.org",
   "type": "module",
   "bin": {
-    "collab": "packages/cli/bin/claude-share.js",
-    "collab-relay": "packages/relay/bin/serve.js"
+    "collab": "packages/cli/bin/claude-share.js"
   },
   "files": [
     "packages/cli",

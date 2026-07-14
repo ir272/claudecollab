@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encode, decode, validate, Decoder, TYPES } from './protocol.js';
+import { encode, decode, validate, Decoder, TYPES, PROTOCOL_V } from './protocol.js';
 
 test('encode produces newline-terminated JSON in a Buffer', () => {
   const buf = encode({ t: 'end' });
@@ -204,6 +204,14 @@ test('validate rejects malformed messages', () => {
     { t: 'ui', action: { kind: 'role', id: 'g2', role: 7 } }, // role must be a string
   ];
   for (const m of bad) assert.equal(validate(m), false, JSON.stringify(m));
+});
+
+test('HELLO accepts optional v and cap; rejects wrong types', () => {
+  assert.ok(validate({ t: 'hello', want: 'room', v: 1, cap: 4 }));
+  assert.ok(validate({ t: 'hello', want: 'room' })); // pre-versioning client stays valid
+  assert.ok(!validate({ t: 'hello', want: 'room', v: 'one' }));
+  assert.ok(!validate({ t: 'hello', want: 'room', cap: '4' }));
+  assert.equal(PROTOCOL_V, 1);
 });
 
 test('TYPES exposes a constant for every message type', () => {

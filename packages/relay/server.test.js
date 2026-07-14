@@ -516,6 +516,53 @@ test('relay: roomSecret gates room creation; reclaim stays key-gated, not secret
   assert.equal(room2.code, room.code);
 });
 
+test('relay: a HELLO from a future protocol version is refused; current/absent is served', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+  const port = relay.port;
+
+  // A NEWER major than the relay speaks → machine-readable refusal so the CLI can
+  // say "update", not reconnect-loop.
+  const future = await connectHost(port);
+  future.send({ t: TYPES.HELLO, want: 'room', v: 2 });
+  const r1 = await future.next((m) => m.t === TYPES.REFUSED || m.t === TYPES.ROOM);
+  assert.equal(r1.t, TYPES.REFUSED, 'a future version is refused');
+  assert.equal(r1.reason, 'version');
+
+  // The current version is served exactly like an unversioned client.
+  const cur = await connectHost(port);
+  cur.send({ t: TYPES.HELLO, want: 'room', v: 1 });
+  const r2 = await cur.next((m) => m.t === TYPES.ROOM || m.t === TYPES.REFUSED);
+  assert.equal(r2.t, TYPES.ROOM, 'the current version gets a room');
+});
+
+test('relay: HELLO cap caps the room — the guest past it is refused', async (t) => {
+  const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
+  t.after(() => relay.close());
+
+  const host = await connectHost(relay.port);
+  host.send({ t: TYPES.HELLO, want: 'room', v: 1, cap: 1 });
+  const { code } = await host.next((m) => m.t === TYPES.ROOM);
+
+  // First guest fills the one-seat room.
+  const a = await connectGuest(relay.port, { code, privateKey: newKey() });
+  await a.waitFor('pick a name');
+  a.type('sid\r');
+  const k1 = await host.next((m) => m.t === TYPES.KNOCK);
+  host.send({ t: TYPES.ADMIT, id: k1.id });
+  await host.next((m) => m.t === TYPES.JOINED && m.id === k1.id);
+
+  // Second guest knocks and is admitted, but the room is full: addGuest fails, so
+  // the relay refuses this one exactly like a deny.
+  const b = await connectGuest(relay.port, { code, privateKey: newKey() });
+  await b.waitFor('pick a name');
+  b.type('mallory\r');
+  const k2 = await host.next((m) => m.t === TYPES.KNOCK);
+  host.send({ t: TYPES.ADMIT, id: k2.id });
+  await b.onClose();
+  assert.match(b.getOut(), /didn't let you in|no hard feelings/i, 'the over-cap guest is turned away');
+});
+
 test('relay: a passworded room challenges ssh guests before anything else', async (t) => {
   const relay = await startRelay({ port: 0, host: '127.0.0.1', hostKey: newKey() });
   t.after(() => relay.close());
