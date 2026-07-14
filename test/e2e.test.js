@@ -584,8 +584,8 @@ function ctlAsk(sockPath, req, ms = 20000) {
 test('e2e: control socket — go creates the room (invite only, no token), status reports live, off closes it', { timeout: 120000 }, async (t) => {
   const ORANGE = '\x1b[38;5;214m'; // the band's status-line color — nothing else emits it
 
-  const relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey(), hostName: 'ian' });
-  t.after(() => relay.close());
+  let relay = await startRelay({ port: 0, webPort: 0, host: '127.0.0.1', hostKey: newKey(), hostName: 'ian' });
+  t.after(() => relay.close()); // closure reads the variable — always closes the CURRENT instance
   const { port, webPort } = relay;
 
   const workDir = mkdtempSync(join(tmpdir(), 'cs-ctl-work-'));
@@ -690,4 +690,26 @@ test('e2e: control socket — go creates the room (invite only, no token), statu
   // status after off → not live again.
   const after = await ctlAsk(sock, { v: 1, t: 'status' });
   assert.deepEqual(after, { ok: true, live: false }, 'status post-off: back to not live');
+
+  // ── regression: go works AGAIN after off (fresh dial, fresh room, no ghosts) ──
+  const go2 = await ctlAsk(sock, { v: 1, t: 'go' });
+  assert.equal(go2.ok, true, `re-go after off succeeded (${JSON.stringify(go2)})`);
+  assert.ok(go2.room, 're-go grants a room');
+  assert.equal(relay.roomCount(), 1, 'exactly one room after the off→go cycle');
+
+  // ── regression: off during a reconnect window must NOT resurrect the room ──────
+  // Kill the relay while live → the host loops reconnect attempts → off lands in
+  // that window → restart the relay → nothing may dial back in (the old bug: the
+  // still-armed reconnect timer re-HELLOed a brand-new INVISIBLE room, band hidden).
+  relay.close();
+  await host.waitFor('reconnecting to reclaim', 20000);
+  const offMidReconnect = await ctlAsk(sock, { v: 1, t: 'off' });
+  assert.deepEqual(offMidReconnect, { ok: true }, 'off acknowledges mid-reconnect');
+  relay = await startRelay({ port, webPort: 0, host: '127.0.0.1', hostKey: newKey() });
+  await delay(3500); // longer than the 1500ms reconnect backoff — any live timer would have fired
+  assert.equal(relay.roomCount(), 0, 'no invisible room was resurrected after off');
+  const silent = await ctlAsk(sock, { v: 1, t: 'status' });
+  assert.deepEqual(silent, { ok: true, live: false }, 'status confirms: still not live');
+  const roomFileGone = !existsSync(join(tmpdir(), `claude-share-room-${cli.pid}.json`));
+  assert.ok(roomFileGone, 'the room file stayed gone');
 });

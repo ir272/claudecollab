@@ -1077,7 +1077,13 @@ async function main() {
   // identically. Handlers use their own instance `r` for replies, so a stale
   // instance can never write to (or resurrect) a superseded connection.
   function wireRelay(r) {
+    // A superseded instance (off() tore it down mid-dial, or a reconnect replaced
+    // it) must never mutate room state: a stale late ROOM grant would resurrect a
+    // session the user just turned off, and a stale REFUSED would veto future gos.
+    // onClose below already carries the same guard.
+    const current = () => r === relay;
     r.onRoom((code, webUrl) => {
+      if (!current()) return;
       reconnectAttempts = 0;
       publicBase = webUrl || null; // a deployed relay's public https origin (or none)
       const reclaimed = state.room === code; // we already held this exact code → reclaim
@@ -1097,6 +1103,7 @@ async function main() {
       copyInvite(inviteRoomUrl(code), (copied) => showToast(readyToast(copied), 15000));
     });
     r.onGone(() => {
+      if (!current()) return;
       // Reclaim refused: the 10-min TTL lapsed, the relay restarted (fresh
       // registry), or the room truly ended. Nothing to return to — drop the code
       // AND its links (a dead URL on the band reads as a live room), finish solo.
@@ -1108,6 +1115,7 @@ async function main() {
       repaintBand();
     });
     r.onRefused((reason) => {
+      if (!current()) return;
       // The relay rejected our HELLO outright. 'secret' = it requires a room
       // secret we didn't present (or ours is wrong); 'version' = it speaks a newer
       // protocol than we do (update the CLI). Terminal, not transient.
@@ -1235,7 +1243,9 @@ async function main() {
   // CLI was missing. Failures on a held room retry within the TTL; an initial
   // failure just runs solo.
   function openRelay() {
-    if (exited || relayVetoed) return;
+    // wantLive is the invariant: only a live-intending session may dial. Guards any
+    // stray timer/callback that survives an off() teardown (belt to off's braces).
+    if (exited || relayVetoed || !wantLive) return;
     // Fresh pin check per attempt (it re-reads the store, picking up a pin the
     // previous attempt just made). null = loopback dev relay, no verification.
     const pin =
@@ -1369,12 +1379,28 @@ async function main() {
           try {
             r?.close();
           } catch {}
+          // Disarm any pending reclaim: a reconnect timer left ticking would dial
+          // openRelay() after this teardown and HELLO a brand-new room with the band
+          // hidden — an invisibly-live room, the one thing off() must make impossible.
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+          reconnectAttempts = 0;
           state.setRoom(null);
           currentUrl = null;
           inviteUrlStr = null;
           clearRoomFile(roomFile);
           wantLive = false;
           goLiveStarted = false;
+          // Purge every participant footprint — the process now OUTLIVES the room, so
+          // stale guests would haunt the next go (wrong count, crushed size clamp,
+          // orphaned drafts/queue items). forgetGuest also logs each departure.
+          for (const g of [...state.guests()]) forgetGuest(g.id);
+          pendingKnocks = [];
+          knockInfo.clear();
+          pointers.clear();
+          hostTabIds.clear();
+          hostTabSizes.clear();
+          guestPartitioners.clear();
           repaintBand(); // band disappears; the child reclaims the row
         }
         return { ok: true };
