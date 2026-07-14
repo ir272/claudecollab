@@ -1375,10 +1375,11 @@ function main() {
 
   // The host routes a prompter's keys straight to Claude whenever they have no
   // draft box open ("you're at the terminal"). A window input must therefore
-  // GUARANTEE a box exists before its keystrokes land, or the text leaks into
-  // Claude (and is never recorded as that person's turn). After each send the box
-  // is consumed, so we re-arm on the next keystroke. `draftArmed` bridges the state
-  // round-trip so we never spawn a second empty box while the first is in flight.
+  // guarantee a box exists before its keystrokes land, or the text leaks into
+  // Claude (and is never recorded as that person's turn). Solo window boxes are
+  // kept after send (brain empties but retains them), but we still re-arm on the
+  // first keystroke when no box exists yet and while NEW_DRAFT is in flight.
+  // `draftArmed` bridges that round-trip so we never spawn a second empty box.
   let draftArmed = false;
   function myWindowBox(v) {
     const mine = v?.panels.find((p) => p.isSelf);
