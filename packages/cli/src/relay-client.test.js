@@ -9,10 +9,49 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ssh2 from 'ssh2';
 import { startRelay } from '../../relay/server.js';
+import { Decoder, PROTOCOL_V } from '../../shared/protocol.js';
 import { connectRelay, parseRelayUrl, openingMove } from './relay-client.js';
 
-const { Client, utils } = ssh2;
+const { Client, Server, utils } = ssh2;
 const { generateKeyPairSync, parseKey } = utils;
+
+// A minimal ssh relay that captures the raw protocol frames the host sends —
+// enough to assert the exact HELLO the CLI emits (v + optional cap), without the
+// full relay parsing them away. Accepts any auth; delivers frames in order.
+function captureRelay() {
+  const frames = [];
+  const waiters = [];
+  const deliver = (msg) => {
+    frames.push(msg);
+    const w = waiters.shift();
+    if (w) w(frames.shift());
+  };
+  const server = new Server({ hostKeys: [newKey()] }, (conn) => {
+    conn.on('authentication', (ctx) => ctx.accept());
+    conn.on('error', () => {});
+    conn.on('ready', () => {
+      conn.on('session', (accept) => {
+        const session = accept();
+        session.on('shell', (accept) => {
+          const stream = accept();
+          const dec = new Decoder();
+          stream.on('data', (chunk) => {
+            for (const msg of dec.push(chunk)) deliver(msg);
+          });
+        });
+      });
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', function () {
+      resolve({
+        port: this.address().port,
+        nextFrame: () => (frames.length ? Promise.resolve(frames.shift()) : new Promise((res) => waiters.push(res))),
+        close: () => server.close(),
+      });
+    });
+  });
+}
 
 // ssh2's generateKeyPairSync occasionally emits a key its own parser rejects
 // ("Malformed OpenSSH private key") — a known upstream flake that surfaces under
@@ -86,6 +125,33 @@ test('openingMove: hello for a fresh connection, reclaim when a room is held', (
   assert.deepEqual(openingMove(null), { t: 'hello' });
   assert.deepEqual(openingMove(undefined), { t: 'hello' });
   assert.deepEqual(openingMove('brave-otter'), { t: 'reclaim', code: 'brave-otter' });
+});
+
+test('hello() announces the protocol version and, when configured, the requested cap', async (t) => {
+  const relay = await captureRelay();
+  t.after(() => relay.close());
+  const url = `ssh://127.0.0.1:${relay.port}`;
+
+  // No cap configured: HELLO carries v:1 and NO cap key.
+  const plain = connectRelay({ url, privateKey: newKey() });
+  t.after(() => plain.close());
+  await plain.ready;
+  plain.hello();
+  const h1 = await relay.nextFrame();
+  assert.equal(h1.t, 'hello');
+  assert.equal(h1.want, 'room');
+  assert.equal(h1.v, PROTOCOL_V);
+  assert.equal(h1.v, 1);
+  assert.ok(!('cap' in h1), 'no cap key when none is configured');
+
+  // A configured cap rides the same HELLO.
+  const capped = connectRelay({ url, privateKey: newKey(), cap: 4 });
+  t.after(() => capped.close());
+  await capped.ready;
+  capped.hello();
+  const h2 = await relay.nextFrame();
+  assert.equal(h2.v, 1);
+  assert.equal(h2.cap, 4);
 });
 
 test('relay-client: hello → room, knock → admit → guest sees broadcast bytes', async (t) => {

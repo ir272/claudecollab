@@ -16,7 +16,7 @@
 
 import ssh2 from 'ssh2';
 import { createHash } from 'node:crypto';
-import { TYPES, encode, validate, Decoder } from '../../shared/protocol.js';
+import { TYPES, encode, validate, Decoder, PROTOCOL_V } from '../../shared/protocol.js';
 
 const { Client, utils } = ssh2;
 
@@ -70,6 +70,8 @@ export function openingMove(heldRoom) {
  * @param {string} [opts.roomPass]           optional join password for the room this host
  *                                            creates — the relay challenges every guest
  *                                            with it before their knock is delivered
+ * @param {number} [opts.cap]                 requested max guests for this room; rides HELLO
+ *                                            as `cap` and the relay clamps it to [1, relayCap]
  * @param {(fp:string)=>boolean} [opts.verifyHostKey]  called with the relay's SHA256:…
  *                                            key fingerprint during the handshake; return
  *                                            false to abort (impersonation defense).
@@ -84,7 +86,7 @@ export function openingMove(heldRoom) {
  * }}
  */
 export function connectRelay(opts = {}) {
-  const { url, keepaliveInterval = 20000, secret, roomPass, verifyHostKey } = opts;
+  const { url, keepaliveInterval = 20000, secret, roomPass, cap, verifyHostKey } = opts;
   const { host, port } = parseRelayUrl(url);
   // A stable key lets the host reclaim its room after a drop; if the caller has
   // none we still connect (relay rejects `none` auth) with a throwaway key —
@@ -243,7 +245,15 @@ export function connectRelay(opts = {}) {
     onClose: on(sets.close), // ()                         the control channel closed
     onError: on(sets.error), // (err)                      ssh transport error
 
-    hello: () => send({ t: TYPES.HELLO, want: 'room', ...(secret ? { secret } : {}), ...(roomPass ? { pass: roomPass } : {}) }),
+    hello: () =>
+      send({
+        t: TYPES.HELLO,
+        want: 'room',
+        v: PROTOCOL_V, // announce our wire version; the relay refuses a newer one
+        ...(Number.isFinite(cap) ? { cap } : {}), // requested room size (relay clamps)
+        ...(secret ? { secret } : {}),
+        ...(roomPass ? { pass: roomPass } : {}),
+      }),
     reclaim: (code) => send({ t: TYPES.RECLAIM, code }),
     admit: (id) => send({ t: TYPES.ADMIT, id }),
     deny: (id) => send({ t: TYPES.DENY, id }),
