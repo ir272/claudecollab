@@ -82,7 +82,7 @@ export function runFirstRun({ input = process.stdin, output = process.stdout, co
     return [
       '',
       ...title,
-      `  ${d('─'.repeat(ruleWidth))}`,
+      `  ${sgr('38;5;208', '─'.repeat(ruleWidth))}`,
       '',
       `  ${g('✓')} /collab will be added to Claude Code`,
       `       ${b('claude')}    ${d('← start like you always do')}`,
