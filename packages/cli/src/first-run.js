@@ -75,11 +75,14 @@ export function runFirstRun({ input = process.stdin, output = process.stdout, co
     // The wordmark needs ~75 cols; a narrower terminal gets the plain title so the
     // blocks never wrap into soup. Injected test outputs have no .columns → wordmark.
     const wide = output.columns === undefined || output.columns >= 76;
-    const title = wide ? wordmark('CLAUDE COLLAB').map((l) => `  ${l}`) : [`  ${o('✦ claudecollab')}`];
+    const mark = wordmark('CLAUDE COLLAB');
+    const title = wide ? mark.map((l) => `  ${l}`) : [`  ${o('✦ claudecollab')}`];
+    // The rule spans exactly the wordmark's width (strip the color codes to measure).
+    const ruleWidth = wide ? mark[0].replace(/\x1b\[[0-9;]*m/g, '').length : 58;
     return [
       '',
       ...title,
-      `  ${d('─'.repeat(58))}`,
+      `  ${d('─'.repeat(ruleWidth))}`,
       '',
       `  ${g('✓')} /collab will be added to Claude Code`,
       `       ${b('claude')}    ${d('← start like you always do')}`,
