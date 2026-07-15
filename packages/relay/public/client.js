@@ -24,6 +24,20 @@ const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
 export const NEW_DRAFT_BYTES = '\x0e'; // Ctrl+N — "start a fresh draft"
 
+// The shared-view floor (mirrors FLOOR_COLS/FLOOR_ROWS in brain/state.js). A tab
+// that measures below this is a phone-sized viewer: it reports the sentinel 0×0 so
+// the host scales the mirror onto it instead of shrinking the room or parking it.
+const FLOOR_COLS = 80;
+const FLOOR_ROWS = 24;
+
+// The bytes that answer Claude Code's permission ask, sent through the ordinary key
+// channel (the role gate still applies). Real Claude v2 shows a numbered select —
+// option 1 is always "Yes"; Esc is the "(esc)" No option, which denies regardless of
+// how many options the prompt has. (Do NOT use "2" for deny — that is "Yes, and
+// don't ask again", an APPROVE variant.) The fake-claude fixture accepts these too.
+export const ASK_APPROVE_BYTES = '1';
+export const ASK_DENY_BYTES = '\x1b';
+
 // ════════════════════════════════════════════════════════════════════════════
 // PURE HELPERS (exported; no DOM, no globals — safe to import in node)
 // ════════════════════════════════════════════════════════════════════════════
@@ -873,7 +887,11 @@ function main() {
     const { cw, ch } = refCellSize();
     const cols = Math.max(2, Math.floor((rect.width - 24) / cw));
     const rows = Math.max(1, Math.floor((rect.height - 20) / ch));
-    sendMsg({ t: 'resize', cols, rows });
+    // Below the shared floor (a phone): report the sentinel 0×0 — "I scale, ignore my
+    // size" — so the host neither shrinks the room to us nor parks us on a hint. We
+    // keep rendering state.view zoomed (scaleTerm). Report real capacity otherwise.
+    const scaled = cols < FLOOR_COLS || rows < FLOOR_ROWS;
+    sendMsg({ t: 'resize', cols: scaled ? 0 : cols, rows: scaled ? 0 : rows });
     scaleTerm();
   }
 

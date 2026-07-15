@@ -40,7 +40,7 @@ import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js
 import { createPinCheck } from '../src/known-relays.js';
 import { hostUrl, inviteUrl, readyToast } from '../src/invite.js';
 import { createPartitioner } from '../src/term-chatter.js';
-import { RoomState, HOST_ID, atLeast, FLOOR_COLS, FLOOR_ROWS } from '../src/brain/state.js';
+import { RoomState, HOST_ID, atLeast, FLOOR_COLS, FLOOR_ROWS, isScaledViewer } from '../src/brain/state.js';
 import { Queue } from '../src/brain/queue.js';
 import { Log } from '../src/brain/log.js';
 import { Drafts } from '../src/brain/drafts.js';
@@ -344,6 +344,7 @@ async function main() {
     if (!isLive()) return { cols: stdout.columns || 80, rows: stdout.rows || 24 };
     let { cols, rows } = state.clamp();
     for (const s of hostTabSizes.values()) {
+      if (isScaledViewer(s)) continue; // a below-floor host tab scales too — ignore its size
       cols = Math.min(cols, s.cols);
       rows = Math.min(rows, s.rows);
     }

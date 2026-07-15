@@ -33,6 +33,19 @@ export function atLeast(role, min) {
 export const FLOOR_COLS = 80;
 export const FLOOR_ROWS = 24;
 
+/**
+ * A scaled viewer reports the sentinel size 0×0 — "I scale, ignore my size". A
+ * browser tab below the 80×24 floor sends this instead of its real (tiny) size so
+ * the host renders the shared view zoomed on it rather than shrinking the room to
+ * fit or parking it on a "make your terminal bigger" hint (mobile room view). Such
+ * a participant is excluded from the clamp and is a mirror target, never a spectator.
+ * @param {{cols?:number, rows?:number}} p
+ * @returns {boolean}
+ */
+export function isScaledViewer(p) {
+  return p != null && p.cols === 0 && p.rows === 0;
+}
+
 // Stable participant colors for the browser overlay (spec §roles: "color is a
 // bonus — colorblind-safe by not being load-bearing"; name tags carry identity).
 // Eight distinct hues, assigned by the brain per fingerprint so a returning key
@@ -189,7 +202,11 @@ export class RoomState {
     return true;
   }
 
-  /** Record a participant's terminal size (host or guest). */
+  /**
+   * Record a participant's terminal size (host or guest). The sentinel 0×0 is legal
+   * and means "scaled viewer" (see isScaledViewer): it is excluded from the clamp
+   * and never parks — a below-floor browser tab reports it instead of its real size.
+   */
   setSize(id, cols, rows) {
     const p = this.participants.get(id);
     if (!p) return false;
@@ -198,10 +215,14 @@ export class RoomState {
     return true;
   }
 
-  /** True if this participant's terminal is below the 80×24 floor (they spectate). */
+  /**
+   * True if this participant's terminal is below the 80×24 floor (they spectate). A
+   * scaled viewer (sentinel 0×0) is never below the floor — it renders zoomed instead.
+   */
   belowFloor(id) {
     const p = this.participants.get(id);
     if (!p) return false;
+    if (isScaledViewer(p)) return false;
     return (p.cols != null && p.cols < FLOOR_COLS) || (p.rows != null && p.rows < FLOOR_ROWS);
   }
 
@@ -229,6 +250,7 @@ export class RoomState {
     let cols = Infinity;
     let rows = Infinity;
     for (const p of this.participants.values()) {
+      if (isScaledViewer(p)) continue; // "I scale, ignore my size" — never constrains the room
       if (this.belowFloor(p.id)) continue;
       if (p.cols != null) cols = Math.min(cols, p.cols);
       if (p.rows != null) rows = Math.min(rows, p.rows);
