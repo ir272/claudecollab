@@ -33,6 +33,8 @@ import {
   roleAction,
   kickAction,
   inviteLink,
+  imageAction,
+  clipboardImageFile,
   ASK_APPROVE_BYTES,
   ASK_DENY_BYTES,
 } from './client.js';
@@ -156,6 +158,32 @@ test('roleAction/kickAction target the participant id, never the claimed name (f
   assert.deepEqual(kickAction('g2'), { t: 'ui', action: { kind: 'kick', id: 'g2' } });
   // The id is used verbatim even when a name has spaces / non-word chars (un-mentionable).
   assert.equal(kickAction('uuid-with-space-name').action.id, 'uuid-with-space-name');
+});
+
+test('imageAction builds a validated ui image payload', () => {
+  assert.deepEqual(imageAction('image/png', 'aGVsbG8=', { name: 'x.png', draft: true }), {
+    t: 'ui',
+    action: { kind: 'image', mime: 'image/png', data: 'aGVsbG8=', name: 'x.png', draft: true },
+  });
+  assert.deepEqual(imageAction('image/jpeg', 'abc'), {
+    t: 'ui',
+    action: { kind: 'image', mime: 'image/jpeg', data: 'abc' },
+  });
+});
+
+test('clipboardImageFile picks the first image item and ignores text-only clips', () => {
+  assert.equal(clipboardImageFile(null), null);
+  assert.equal(clipboardImageFile({ items: [], files: [] }), null);
+  const file = { type: 'image/png', name: 'a.png' };
+  const cd = {
+    items: [
+      { kind: 'string', type: 'text/plain', getAsFile: () => null },
+      { kind: 'file', type: 'image/png', getAsFile: () => file },
+    ],
+  };
+  assert.equal(clipboardImageFile(cd), file);
+  assert.equal(clipboardImageFile({ files: [file] }), file);
+  assert.equal(clipboardImageFile({ files: [{ type: 'text/plain', name: 'a.txt' }] }), null);
 });
 
 test('inviteLink builds the token-free share link, never the host URL (finding 1)', () => {

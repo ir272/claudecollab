@@ -51,6 +51,7 @@ import { parse as parseCommand, permitted as commandPermitted, resolveMention } 
 import { build as buildCard, recapCard } from '../src/brain/card.js';
 import { foldKnock } from '../src/brain/knocks.js';
 import { askContext, summarizeToolInput } from '../src/brain/ask.js';
+import { decodeImagePayload, saveImageFile, copyImageToClipboard, CTRL_V } from '../src/image-paste.js';
 
 function parseArgs(argv) {
   const opts = {
@@ -1072,6 +1073,41 @@ async function main() {
       showToast('state resynced to idle');
       pump();
       repaintBand();
+      return;
+    }
+    // Browser clipboard / drag-drop image. Guests can't feed the host OS clipboard
+    // through keystrokes alone — Claude reads images locally — so the bytes ride
+    // here, land in a temp file, and either enter a draft as an `[image]` paste
+    // token (expands to the path on send) or are Ctrl+V'd into Claude when the
+    // sender is talking to the live input line.
+    if (action.kind === 'image') {
+      if (!atLeast(role, 'prompter')) return notify(id, "you can't attach images — ask the host for a role that can type");
+      const decoded = decodeImagePayload(action);
+      if (decoded.error) return notify(id, decoded.error);
+      let file;
+      try {
+        file = saveImageFile(decoded);
+      } catch {
+        return notify(id, "couldn't save image");
+      }
+      const wantDraft = action.draft === true || drafts.activeBox(id) !== null;
+      if (wantDraft) {
+        if (!drafts.activeBox(id)) drafts.startDraft(id);
+        const r = drafts.keystroke(id, `\x1b[200~${file}\x1b[201~`);
+        if (r.send) routeSend(id, r.send);
+        notify(id, 'image attached to your draft');
+        repaintBand();
+        return;
+      }
+      // Direct-to-Claude: native clipboard paste when we can (PNG on mac/linux),
+      // otherwise paste the path — Claude attaches images referenced by path.
+      if (copyImageToClipboard(file, decoded.mime)) {
+        pty.write(CTRL_V);
+        notify(id, 'image pasted into Claude');
+        return;
+      }
+      pty.write(`\x1b[200~${file}\x1b[201~`);
+      notify(id, 'image path pasted into Claude');
       return;
     }
     if (action.kind === 'command') routeSend(id, { text: String(action.text) });

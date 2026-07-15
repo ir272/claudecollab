@@ -125,6 +125,19 @@ function isUiAction(a) {
   if (a.kind === 'unqueue') return isNum(a.n); // pull a queued prompt back into a draft
   if (a.kind === 'scroll') return isNum(a.lines); // wheel over the mirror → Claude's transcript scroll
   if (a.kind === 'resync') return true; // host: force claude-state idle (missed hook)
+  // Browser image paste/drop: base64 bytes ride to the host, which writes a temp
+  // file and either clips it into Claude or drops the path into a draft. Cap the
+  // wire size (~5MB decoded → ~7MB b64) so a giant payload fails closed here.
+  if (a.kind === 'image') {
+    return (
+      isStr(a.mime) &&
+      isStr(a.data) &&
+      a.data.length > 0 &&
+      a.data.length <= 7 * 1024 * 1024 &&
+      (a.name === undefined || isStr(a.name)) &&
+      (a.draft === undefined || typeof a.draft === 'boolean')
+    );
+  }
   return false;
 }
 

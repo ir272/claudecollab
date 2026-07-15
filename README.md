@@ -110,6 +110,7 @@ Want an extra guardrail? Start with `collab --room-password <pw>`. Then friends 
 
 - Everyone who can type gets their own little box at the bottom to write in. Type there and press Enter to send. Your box stays open, so you can keep going. If Claude is busy, your message will get queued.
 - Want to write a message *together* with someone? Click **+ draft** to open a shared box you both type in.
+- You can **paste or drag an image** into a box (or onto the terminal). It shows up as `[image]`; when you send, Claude sees it.
 - To talk to Claude directly (to approve y/n questions, answer questions, etc) click Claude's CLI text line.
 - Everyone sees the same screen, and scrolling is shared.
 
