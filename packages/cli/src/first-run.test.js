@@ -16,23 +16,22 @@ function makeOutput() {
   return { write: (s) => (buf += s), get: () => stripControls(buf) };
 }
 
-test('renders the approved copy — required-core line, all three connectors, donate line', async () => {
+test('renders the approved copy — wordmark, core line, Slack row, relay footer', async () => {
   const input = new PassThrough();
   const output = makeOutput();
   const p = runFirstRun({ input, output });
   input.write('\r'); // enter immediately so the promise resolves
   await p;
   const screen = output.get();
-  assert.ok(screen.includes('✦ collab — first run'), 'the title');
-  assert.ok(
-    screen.includes('✓ /collab will be added to Claude Code   (required — it IS the product)'),
-    'the required-core line, verbatim',
-  );
+  assert.ok(screen.includes('█████'), 'the CLAUDE COLLAB wordmark blocks');
+  assert.ok(screen.includes('✓ /collab will be added to Claude Code'), 'the core line');
+  assert.ok(screen.includes('run /collab to turn it multiplayer!'), 'the /collab hint');
+  assert.ok(screen.includes('Select Claude’s connectors:'.replace('’', "'")), 'the connector prompt');
   assert.ok(screen.includes('Slack     DM the join link to a teammate'), 'the Slack connector row');
-  assert.ok(screen.includes('Gmail     email it'), 'the Gmail connector row');
-  assert.ok(screen.includes('Discord   DM it to a friend'), 'the Discord connector row');
+  assert.ok(!screen.includes('Gmail') && !screen.includes('Discord'), 'Slack only for now');
   assert.ok(screen.includes('collaborations run through our free server (claudecollab.org).'), 'the relay line');
-  assert.ok(screen.includes('please consider donating so we can keep this open ♥'), 'the donate line');
+  assert.ok(screen.includes('guide in the README. ♥'), 'the ♥ rides the README line');
+  assert.ok(!screen.includes('please consider donating'), 'the donate line is gone');
   assert.ok(screen.includes('↑↓ move · space toggle · enter start claude'), 'the key hints');
 });
 
@@ -45,16 +44,15 @@ test('enter immediately keeps the default selection (Slack on)', async () => {
   assert.deepEqual(res, { connectors: ['slack'] });
 });
 
-test('space, ↓, space, enter → Slack off, Gmail on', async () => {
+test('space toggles Slack off, space again back on', async () => {
   const input = new PassThrough();
   const output = makeOutput();
   const p = runFirstRun({ input, output });
   input.write(' '); // toggle Slack (cursor at 0) off
-  input.write('\x1b[B'); // move down to Gmail
-  input.write(' '); // toggle Gmail on
+  input.write(' '); // and back on
   input.write('\r'); // start
   const res = await p;
-  assert.deepEqual(res, { connectors: ['gmail'] });
+  assert.deepEqual(res, { connectors: ['slack'] });
 });
 
 test('toggling everything off resolves to an empty connector list', async () => {

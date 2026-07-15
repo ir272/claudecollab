@@ -1,18 +1,16 @@
 // The first-run screen — shown once, on the first interactive `collab`. It states the
-// required core (the /collab plugin), offers an optional connector multi-select for
-// link delivery, and carries the relay/donate footer. Copy is the approved mock v3 —
-// do NOT rewrite it. Pure I/O injection: input/output are passed in, so the whole
-// screen is testable by feeding byte sequences (no real TTY).
+// core (the /collab plugin), offers the connector picker for link delivery, and
+// carries the relay footer. Copy is Ian-approved (revised 2026-07-15) — do NOT
+// rewrite it. Pure I/O injection: input/output are passed in, so the whole screen is
+// testable by feeding byte sequences (no real TTY).
 //
 // A hand-rolled raw-mode picker (no dependency): ↑/↓ move the cursor, space toggles
 // the highlighted connector, enter starts claude. No alt-screen — it prints in place,
 // redrawing by moving the cursor up and clearing to the end of the screen.
 
-/** The connectors offered for link delivery. Slack is the sensible default-on pick. */
+/** The connectors offered for link delivery. Slack only for now (Ian, 2026-07-15). */
 export const DEFAULT_CONNECTORS = [
   { key: 'slack', label: 'Slack', hint: 'DM the join link to a teammate', checked: true },
-  { key: 'gmail', label: 'Gmail', hint: 'email it', checked: false },
-  { key: 'discord', label: 'Discord', hint: 'DM it to a friend', checked: false },
 ];
 
 // ── styling (the approved mock's visual layer: orange accent = the band's color,
@@ -26,6 +24,31 @@ const d = (s) => sgr('38;5;245', s); // dim gray — secondary copy
 const b = (s) => sgr('1', s); // bold
 const chip = (s) => (useColor ? `\x1b[48;5;236m\x1b[38;5;252m${s}\x1b[0m` : s); // kbd key chip (no padding — stripped text stays byte-equal to the approved copy)
 const selRow = (s) => (useColor ? `\x1b[48;5;236m${s}\x1b[0m` : s); // highlighted picker row
+
+// ── the CLAUDE COLLAB wordmark (the skills-installer look: chunky block glyphs with
+// a light→dark gray gradient per row). 5-row bitmap font, only the letters we need.
+// Width: "CLAUDE COLLAB" renders 75 cols incl. indent — under the 80-col floor; a
+// narrower terminal gets the plain one-line title instead of wrapped soup.
+const FONT = {
+  A: ['█████', '█   █', '█████', '█   █', '█   █'],
+  B: ['████ ', '█   █', '████ ', '█   █', '████ '],
+  C: ['█████', '█    ', '█    ', '█    ', '█████'],
+  D: ['████ ', '█   █', '█   █', '█   █', '████ '],
+  E: ['█████', '█    ', '███  ', '█    ', '█████'],
+  L: ['█    ', '█    ', '█    ', '█    ', '█████'],
+  O: ['█████', '█   █', '█   █', '█   █', '█████'],
+  U: ['█   █', '█   █', '█   █', '█   █', '█████'],
+  ' ': ['  ', '  ', '  ', '  ', '  '],
+};
+const GRADIENT = ['255', '252', '249', '246', '243']; // light → dark, like SKILLS
+function wordmark(text) {
+  const rows = [];
+  for (let r = 0; r < 5; r++) {
+    const line = [...text].map((ch) => FONT[ch]?.[r] ?? '     ').join(' ');
+    rows.push(useColor ? `\x1b[38;5;${GRADIENT[r]}m${line}\x1b[0m` : line);
+  }
+  return rows;
+}
 
 /**
  * Render the first-run screen and drive the picker.
@@ -49,23 +72,25 @@ export function runFirstRun({ input = process.stdin, output = process.stdout, co
       const body = ` ${box} ${b(it.label.padEnd(10))}${d(it.hint)} `;
       return `${arrow}${sel ? selRow(body) : body}`;
     });
+    // The wordmark needs ~75 cols; a narrower terminal gets the plain title so the
+    // blocks never wrap into soup. Injected test outputs have no .columns → wordmark.
+    const wide = output.columns === undefined || output.columns >= 76;
+    const title = wide ? wordmark('CLAUDE COLLAB').map((l) => `  ${l}`) : [`  ${o('✦ claudecollab')}`];
     return [
       '',
-      `  ${o('✦ collab')} ${d('— first run')}`,
+      ...title,
       `  ${d('─'.repeat(58))}`,
       '',
-      `  ${g('✓')} /collab will be added to Claude Code   ${d('(required — it IS the product)')}`,
-      `       ${b('claude')}          ${d('← start like you always do')}`,
-      `       ${b('/collab @james')}  ${d('← the moment you want company')}`,
+      `  ${g('✓')} /collab will be added to Claude Code`,
+      `       ${b('claude')}    ${d('← start like you always do')}`,
+      `       ${b('/collab')}   ${d('← run /collab to turn it multiplayer!')}`,
       '',
-      `  ${d('optional: let /collab @name deliver your join link for you.')}`,
-      `  ${d("it sends through YOUR accounts, using Claude's connectors. pick any:")}`,
+      `  ${d("Select Claude's connectors:")}`,
       '',
       ...rows,
       '',
       `  ${d('collaborations run through our free server (claudecollab.org).')}`,
-      `  ${d('want to run your own? `collab relay` — guide in the README.')}`,
-      `  ${d('please consider donating so we can keep this open')} ${o('♥')}`,
+      `  ${d('want to run your own? `collab relay` — guide in the README.')} ${o('♥')}`,
       '',
       `  ${chip('↑↓')} ${d('move ·')} ${chip('space')} ${d('toggle ·')} ${chip('enter')} ${d('start claude')}`,
     ];
