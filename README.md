@@ -12,13 +12,20 @@ Before you go live, your terminal is *exactly* normal Claude — nothing added. 
 ## Start a session
 
 ```bash
-npx @claudecollab/cli        # try it right now, nothing to install
-# liked it? make it permanent:
-npm install -g @claudecollab/cli
-collab
+npx @claudecollab/cli        # one-time setup (~20s): adds /collab to Claude Code
 ```
 
-The first npx run downloads for ~10–20 seconds; after that it's fast.
+That's the whole install. It shows a short setup screen, then from that day on you
+just use `claude` like you always have — type `/collab` whenever you want company.
+
+Want it to start faster? Install the engine globally (optional):
+
+```bash
+npm install -g @claudecollab/cli
+```
+
+Without this, `claude` still works — it just takes a few extra seconds to start
+while npx fetches the engine each time.
 
 Run `collab` instead of `claude`. It looks and works **exactly** like Claude — because at this point it *is* just Claude. It is not sharing anything yet. You go live only when you decide to.
 
