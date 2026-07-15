@@ -1143,6 +1143,21 @@ async function main() {
       // Copy the SAFE invite (token-free); the host reaches their own tab via the
       // status-line URL. Claim the copy only if it actually happened (finding 5).
       copyInvite(inviteRoomUrl(code), (copied) => showToast(readyToast(copied), 15000));
+      // Auto-open the host's control tab. The host URL lives ONLY in the band (one
+      // line — a normal-width terminal CLIPS it, and a copied clipped link 404s the
+      // room: launch-day dogfood finding). Opening the tab directly sidesteps copying
+      // entirely. Gated on the automation flag the rigs/tests already set, and
+      // opt-out via CLAUDE_SHARE_NO_OPEN for people who hate surprise tabs.
+      if (
+        process.env.CLAUDE_SHARE_SKIP_SETUP !== '1' &&
+        !process.env.CLAUDE_SHARE_NO_OPEN &&
+        stdout.isTTY
+      ) {
+        const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+        try {
+          execFile(opener, [hostRoomUrl(code)], () => {});
+        } catch {}
+      }
     });
     r.onGone(() => {
       if (!current()) return;

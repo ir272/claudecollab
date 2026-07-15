@@ -22,6 +22,21 @@ const PATH_LINE = 'export PATH="$HOME/.claude-share/bin:$PATH"';
 // Default rc candidates (macOS/Linux stance — no Windows rc handling by design).
 const RC_CANDIDATES = ['.zshrc', '.bashrc'];
 
+// The shim body. `collab` when a global install provides it; otherwise fall back
+// to npx (an npx-only user has no global bin — without the fallback their `claude`
+// would break outright). Exported for the installer and its test.
+export const SHIM_SCRIPT = [
+  '#!/bin/sh',
+  '# claudecollab shim: claude runs wrapped (sharing dormant until /collab).',
+  '# Falls back to npx for installs that never got a global collab (npx-only',
+  '# users) - without this, the shim would break claude entirely.',
+  'if command -v collab >/dev/null 2>&1; then',
+  '  exec collab "$@"',
+  'fi',
+  'exec npx -y @claudecollab/cli "$@"',
+  '',
+].join('\n');
+
 /** The dir the shim script lives in: `<home>/.claude-share/bin`. */
 export function shimDir(home = os.homedir()) {
   return path.join(home, '.claude-share', 'bin');
@@ -50,7 +65,7 @@ export function installShim({ home = os.homedir(), rcFiles } = {}) {
   const dir = shimDir(home);
   fs.mkdirSync(dir, { recursive: true });
   const script = path.join(dir, 'claude');
-  fs.writeFileSync(script, '#!/bin/sh\nexec collab "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(script, SHIM_SCRIPT, { mode: 0o755 });
   fs.chmodSync(script, 0o755); // writeFileSync doesn't re-chmod an existing file
 
   const targets = resolveRcFiles(home, rcFiles);

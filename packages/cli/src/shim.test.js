@@ -19,7 +19,10 @@ test('installShim writes a 0755 shim script with the exact recursion-safe conten
     const res = installShim({ home, rcFiles: [path.join(home, '.zshrc')] });
     assert.equal(res.installed, true);
     const script = path.join(shimDir(home), 'claude');
-    assert.equal(fs.readFileSync(script, 'utf8'), '#!/bin/sh\nexec collab "$@"\n');
+    const body = fs.readFileSync(script, 'utf8');
+    assert.ok(body.startsWith('#!/bin/sh'), 'a sh script');
+    assert.ok(body.includes('exec collab "$@"'), 'prefers a global collab');
+    assert.ok(body.includes('exec npx -y @claudecollab/cli "$@"'), 'falls back to npx for npx-only installs');
     assert.equal(fs.statSync(script).mode & 0o777, 0o755, 'the shim script is executable (0755)');
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
