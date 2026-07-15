@@ -85,6 +85,21 @@
       </div>
 
       <main class="workspace">
+        <!-- permission ask: the one thing a phone most needs to answer. Big Approve/
+             Deny buttons; on desktop it floats over the terminal, on narrow it leads
+             the column. Buttons send ordinary keystrokes (the role gate still applies). -->
+        <div id="ask-card" class="ask-card" hidden>
+          <div class="ask-head">
+            <span class="ask-badge">permission</span>
+            <span>Claude wants to use <b id="ask-tool">tool</b></span>
+          </div>
+          <div id="ask-summary" class="ask-summary" hidden></div>
+          <div id="ask-actions" class="ask-actions" hidden>
+            <button id="ask-approve" class="ask-btn yes" type="button">Approve</button>
+            <button id="ask-deny" class="ask-btn no" type="button">Deny</button>
+          </div>
+          <div id="ask-viewnote" class="ask-viewnote" hidden>waiting for someone who can type to answer</div>
+        </div>
         <!-- Claude's live session: the shared terminal everyone watches respond.
              Floating "+ draft" boxes (write a prompt TOGETHER) overlay it. -->
         <div id="stage">

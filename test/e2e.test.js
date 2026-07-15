@@ -356,7 +356,11 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   await a.waitFor('[claude] prompt: make the hero full-bleed'); // and was mirrored to the guest
   await a.waitFor('[claude] permission needed');
   // The ask arms the gate — the overlay claude-state flips to 'ask' (Notification hook).
-  await hostTab.waitForState((s) => s.claudeState === 'ask');
+  const sAsk = await hostTab.waitForState((s) => s.claudeState === 'ask');
+  // …and the snapshot carries WHAT Claude is asking, for the browser's ask card.
+  assert.ok(sAsk.ask, 'the state carries ask context while Claude is asking');
+  assert.equal(sAsk.ask.tool, 'Edit', 'the ask card knows which tool');
+  assert.equal(sAsk.ask.summary, 'src/app.js', 'and a short, stripControls-safe input summary');
 
   // ── A sends a second draft while Claude is busy → it QUEUES, attributed ──────
   a.type('\x0e');
@@ -385,6 +389,10 @@ test('e2e: host terminal + browser host tab + ssh guest — URL, auto-admit, adm
   // …and going idle drains the queue in order (fail-closed drain fired on 'idle').
   await host.waitFor('[claude] prompt: use tailwind for all of it');
   await a.waitFor('[claude] prompt: use tailwind for all of it');
+  // Once the ask is answered and Claude moves on, the ask context clears (it only
+  // rides the snapshot while claudeState === 'ask').
+  const sAnswered = await hostTab.waitForState((s) => s.claudeState !== 'ask' && s.queue.length === 0);
+  assert.equal(sAnswered.ask, null, 'the ask context is gone once Claude is no longer asking');
 
   // ── finding 1: the host token must NEVER reach a guest's mirror ──────────────
   // A has received the status-line band mirrored many times by now (via SCREEN). The

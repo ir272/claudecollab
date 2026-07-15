@@ -241,6 +241,38 @@ test('clamp falls back to the floor when no participant reports a size', () => {
   assert.deepEqual(s.clamp(), { cols: FLOOR_COLS, rows: FLOOR_ROWS });
 });
 
+// ── scaled viewers (sentinel 0×0 — mobile room view) ───────────────────────────
+
+test('a scaled viewer (sentinel 0×0) never parks and does not shrink the shared view', () => {
+  const s = new RoomState({ hostSize: { cols: 120, rows: 40 } });
+  s.addGuest('phone', { name: 'phone' });
+  s.setSize('phone', 0, 0); // a below-floor browser tab: "I scale — ignore my size"
+  assert.equal(s.belowFloor('phone'), false, 'a sentinel size is not below the floor');
+  assert.deepEqual(s.clamp(), { cols: 120, rows: 40 }, 'the scaled viewer does not constrain the clamp');
+  assert.ok(s.mirrorTargets().includes('phone'), 'a scaled viewer receives the live mirror');
+  assert.deepEqual(s.spectators(), [], 'a scaled viewer is never parked as a spectator');
+});
+
+test('a scaled viewer leaves the clamp taken over the OTHER participants unchanged', () => {
+  const s = new RoomState({ hostSize: { cols: 120, rows: 40 } });
+  s.addGuest('laptop', { name: 'laptop' });
+  s.setSize('laptop', 100, 30);
+  s.addGuest('phone', { name: 'phone' });
+  s.setSize('phone', 0, 0);
+  assert.deepEqual(s.clamp(), { cols: 100, rows: 30 }, 'clamp is the min of the real participants only');
+  assert.deepEqual(s.mirrorTargets().sort(), ['laptop', 'phone'], 'both are mirrored');
+});
+
+test('a real below-floor ssh guest still parks — the sentinel does not change ssh behavior', () => {
+  const s = new RoomState({ hostSize: { cols: 120, rows: 40 } });
+  s.addGuest('ssh', { name: 'ssh' });
+  s.setSize('ssh', 60, 20); // a real small terminal, NOT the sentinel
+  assert.equal(s.belowFloor('ssh'), true);
+  assert.deepEqual(s.spectators(), ['ssh']);
+  assert.ok(!s.mirrorTargets().includes('ssh'));
+  assert.deepEqual(s.clamp(), { cols: 120, rows: 40 }, 'still excluded from the clamp, like before');
+});
+
 test('ageMs measures elapsed time from an injected clock', () => {
   let t = 1000;
   const s = new RoomState({ now: () => t });

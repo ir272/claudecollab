@@ -475,6 +475,7 @@ body {
 
 /* ── the terminal: full width, glass frame, gradient border ────────────────── */
 .workspace {
+  position: relative; /* the floating ask card anchors here (desktop) */
   flex: 1;
   min-height: 0;
   display: flex;
@@ -561,6 +562,117 @@ body {
     box-shadow: 0 0 0 1.5px rgba(232, 163, 61, 0.9), 0 0 34px rgba(232, 163, 61, 0.42),
       0 24px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
+}
+/* the ask CARD is the real affordance now — suppress the old "click to answer" pill
+   whenever it is showing so they never overlap (the amber pulse still frames it). */
+#stage.ask.has-ask-card::after {
+  display: none;
+}
+
+/* ── permission ask card: touch-first Approve / Deny (all widths) ─────────────
+   On desktop it FLOATS over the top of the terminal (so the baseline, non-asking
+   layout is untouched); on narrow it leaves the flow and leads the card column. */
+.ask-card {
+  position: absolute;
+  z-index: 9;
+  top: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(480px, calc(100% - 48px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(20, 15, 6, 0.92);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 0 0 1.5px rgba(232, 163, 61, 0.6), 0 18px 44px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+}
+.ask-card[hidden] {
+  display: none;
+}
+.ask-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--text);
+}
+.ask-head b {
+  color: var(--amber-hi);
+  font-weight: 700;
+}
+.ask-badge {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #1a1205;
+  background: var(--amber);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.ask-summary {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.32);
+  border-radius: 8px;
+  padding: 8px 10px;
+  max-height: 4.5em;
+  overflow: auto;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.ask-summary[hidden] {
+  display: none;
+}
+.ask-actions {
+  display: flex;
+  gap: 10px;
+}
+.ask-actions[hidden] {
+  display: none;
+}
+.ask-btn {
+  flex: 1 1 0;
+  min-height: 44px; /* a comfortable touch target */
+  font: inherit;
+  font-weight: 700;
+  font-size: 14px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 0.12s var(--spring), filter 0.15s ease;
+}
+.ask-btn:active {
+  transform: scale(0.97);
+}
+.ask-btn.yes {
+  color: #05130c;
+  background: var(--green);
+}
+.ask-btn.yes:hover {
+  filter: brightness(1.08);
+}
+.ask-btn.no {
+  color: var(--red);
+  background: rgba(240, 140, 140, 0.12);
+  box-shadow: inset 0 0 0 1px var(--red-ring);
+}
+.ask-btn.no:hover {
+  background: rgba(240, 140, 140, 0.2);
+}
+.ask-viewnote {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.ask-viewnote[hidden] {
+  display: none;
 }
 
 /* ── the per-user compose windows: a row beneath Claude's live terminal ──────
@@ -1118,6 +1230,57 @@ body {
   }
   .workspace {
     padding: 10px;
+  }
+}
+
+/* ── phones (≤700px): card column is primary, the terminal is a scaled secondary
+   surface below it. The cards fingers use — ask, your compose window, and the host's
+   knock chips — lead; the mirror renders scaled-to-width (tap to zoom). ────────── */
+@media (max-width: 700px) {
+  .workspace {
+    padding: 8px;
+    gap: 8px;
+  }
+  /* the terminal steps down from flex:1 to a shorter, scaled secondary panel */
+  #stage {
+    order: 3;
+    flex: 0 0 auto;
+    height: 40vh;
+    min-height: 200px;
+  }
+  /* the ask card leaves the float and LEADS the column, full width */
+  .ask-card {
+    order: 0;
+    position: static;
+    transform: none;
+    top: auto;
+    left: auto;
+    width: 100%;
+  }
+  /* your compose window(s) become the primary surface, stacked full width */
+  .panels-grid {
+    order: 2;
+    height: auto;
+    min-height: 34vh;
+    grid-template-columns: 1fr;
+  }
+  /* bigger touch targets for the header controls fingers reach for */
+  .ctrl {
+    padding: 7px 14px;
+    font-size: 12.5px;
+  }
+  .kbtn {
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+  .av {
+    width: 26px;
+    height: 26px;
+    font-size: 12px;
+    margin-left: -4px;
+  }
+  .knock-chip {
+    width: 100%;
   }
 }
 

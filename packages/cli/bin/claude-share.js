@@ -40,7 +40,7 @@ import { connectRelay, parseRelayUrl, openingMove } from '../src/relay-client.js
 import { createPinCheck } from '../src/known-relays.js';
 import { hostUrl, inviteUrl, readyToast } from '../src/invite.js';
 import { createPartitioner } from '../src/term-chatter.js';
-import { RoomState, HOST_ID, atLeast, FLOOR_COLS, FLOOR_ROWS } from '../src/brain/state.js';
+import { RoomState, HOST_ID, atLeast, FLOOR_COLS, FLOOR_ROWS, isScaledViewer } from '../src/brain/state.js';
 import { Queue } from '../src/brain/queue.js';
 import { Log } from '../src/brain/log.js';
 import { Drafts } from '../src/brain/drafts.js';
@@ -50,6 +50,7 @@ import { dispatch, classifySend, sendAllowed } from '../src/brain/gate.js';
 import { parse as parseCommand, permitted as commandPermitted, resolveMention } from '../src/brain/commands.js';
 import { build as buildCard, recapCard } from '../src/brain/card.js';
 import { foldKnock } from '../src/brain/knocks.js';
+import { askContext, summarizeToolInput } from '../src/brain/ask.js';
 
 function parseArgs(argv) {
   const opts = {
@@ -234,6 +235,12 @@ async function main() {
   const admittedFps = new Set();
   const claude = { state: 'idle' };
   let armed = false; // true only while a permission ask is pending (hook-armed)
+  // What Claude is asking permission for (tool + a short, stripControls'd input
+  // summary), surfaced in the state snapshot while claude.state === 'ask' so the
+  // browser's ask card can show it. `lastTool` remembers the most recent tool this
+  // turn (its input is the best summary we get); both clear when the turn moves on.
+  let askInfo = null;
+  let lastTool = null;
   let pendingKnocks = []; // FIFO of guest {id,name,fp,seen} awaiting the host tab's admit
   let currentUrl = null; // the host-tab URL (WITH host token) — host's own terminal only
   let inviteUrlStr = null; // the token-free invite URL — safe to show guests in the mirror
@@ -344,6 +351,7 @@ async function main() {
     if (!isLive()) return { cols: stdout.columns || 80, rows: stdout.rows || 24 };
     let { cols, rows } = state.clamp();
     for (const s of hostTabSizes.values()) {
+      if (isScaledViewer(s)) continue; // a below-floor host tab scales too — ignore its size
       cols = Math.min(cols, s.cols);
       rows = Math.min(rows, s.rows);
     }
@@ -381,6 +389,9 @@ async function main() {
     queue: queue.items.map((it, i) => ({ n: i + 1, author: it.author, text: it.text })),
     history: history.snapshot(),
     claudeState: claude.state,
+    // What Claude is asking permission for, only while it is actually asking. The
+    // browser ask card reads this; approve/deny are ordinary keystrokes (role-gated).
+    ask: claude.state === 'ask' ? askInfo : null,
     paused: state.paused,
     pointers: Object.fromEntries(
       [...pointers]
@@ -1055,6 +1066,8 @@ async function main() {
       if (!atLeast(role, 'host')) return;
       claude.state = 'idle';
       armed = false;
+      askInfo = null;
+      lastTool = null;
       log.event('host resynced claude state to idle');
       showToast('state resynced to idle');
       pump();
@@ -1461,6 +1474,8 @@ async function main() {
       clearSubmitWatch(); // the submission is confirmed — the optimistic busy is real
       claude.state = 'busy';
       armed = false;
+      askInfo = null; // a new turn is running — forget the previous turn's ask/tool
+      lastTool = null;
       repaintBand();
     });
     hooks.on('idle', (payload) => {
@@ -1468,17 +1483,21 @@ async function main() {
       clearSubmitWatch();
       claude.state = 'idle';
       armed = false;
+      askInfo = null; // the turn closed — the ask (if any) is answered
+      lastTool = null;
       // Close the open turn with Claude's response, read cleanly from the session
       // transcript the Stop hook points us at (never scraped from the TUI).
       if (history.open) history.finish(captureResponse(payload));
       pump();
       repaintBand();
     });
-    hooks.on('ask', () => {
+    hooks.on('ask', (payload) => {
       lastHookAt = Date.now();
       clearSubmitWatch();
       claude.state = 'ask';
       armed = true; // the ONLY thing that arms a composing-side y/n → Claude (spec: gate on events)
+      // Capture WHAT Claude is asking (tool + short summary) for the browser ask card.
+      askInfo = askContext(payload, lastTool);
       repaintBand();
     });
     hooks.on('tool', (p) => {
@@ -1489,11 +1508,13 @@ async function main() {
       // a real turn flips busy here instead; its Stop still returns to idle.
       if (claude.state === 'idle') claude.state = 'busy';
       const name = p?.tool_name ?? 'tool';
-      const files = [];
       const inp = p?.tool_input ?? {};
+      const files = [];
       for (const key of ['file_path', 'path', 'notebook_path']) {
         if (typeof inp[key] === 'string') files.push(inp[key]);
       }
+      // Remember this tool as the context for an ask that may follow this turn.
+      lastTool = { name, summary: summarizeToolInput(inp) };
       log.tool(name, files);
       repaintBand();
     });
