@@ -497,6 +497,32 @@ test('e2e: the wrapped Claude gets the live room file (invite only, no host toke
   assert.ok(!existsSync(roomFile), 'the room file is gone once the session ends');
 });
 
+test('e2e: the child never inherits CLAUDE_SHARE_SECRET (guest-promptable leak)', { timeout: 60000 }, async (t) => {
+  // The wrapper scrubs the secret from its env after capturing it — a guest could
+  // otherwise prompt the wrapped Claude to echo it into the shared screen.
+  const sink = makeSink();
+  const cli = ptySpawn(
+    process.execPath,
+    [cliEntry, '--no-relay', '--cmd', 'sh', '--', '-c', 'echo "LEAK=[$CLAUDE_SHARE_SECRET]"; sleep 1'],
+    {
+      name: 'xterm-256color',
+      cols: 100,
+      rows: 30,
+      cwd: repoRoot,
+      env: { ...process.env, CLAUDE_SHARE_SECRET: 'sup3r-secret', CLAUDE_SHARE_SKIP_SETUP: '1' },
+    },
+  );
+  cli.onData((d) => sink.feed(d));
+  t.after(() => {
+    try {
+      cli.kill();
+    } catch {}
+  });
+  await sink.waitFor('LEAK=[', 30000);
+  assert.ok(sink.get().includes('LEAK=[]'), 'the child sees an EMPTY secret');
+  assert.ok(!sink.get().includes('sup3r-secret'), 'the secret value never reaches the child');
+});
+
 test('e2e: lazy start — no --live dials no relay, creates no room, paints no band; --live restores it', { timeout: 120000 }, async (t) => {
   // The status-line color: NOTHING but the band ever emits it, so its presence in the
   // host's stdout is a precise "the band painted" signal (renderer.js ORANGE).

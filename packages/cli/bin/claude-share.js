@@ -133,6 +133,12 @@ function loadHostKey() {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const { stdin, stdout } = process;
+  // The room-creation secret is the WRAPPER's credential, captured into opts.secret
+  // above — scrub it from our environment NOW so no child ever inherits it (the pty
+  // child, hook processes, /recap's `claude -p`). Without this, the Claude inside a
+  // shared session could be prompted by any guest to echo $CLAUDE_SHARE_SECRET into
+  // the mirrored screen.
+  delete process.env.CLAUDE_SHARE_SECRET;
 
   // ── first run: the one-screen setup (installs /collab + shims `claude`) ────────
   // Shown ONCE, only on a real interactive run. The bold hazard: rigs/tests spawn
