@@ -86,9 +86,18 @@ const isMentionChar = (atom) => typeof atom === 'string' && MENTION_CHAR.test(at
 const isWordChar = (atom) => isMentionChar(atom); // same class for word-jump/delete
 const isSpace = (atom) => typeof atom === 'string' && /\s/.test(atom) && atom !== '\n';
 const isPaste = (atom) => atom != null && typeof atom === 'object' && atom.paste === true;
+// Image paths pasted from the browser (or a file drop) expand to the real path on
+// send, but collapse to a short `[image]` chip while composing — matching Claude's
+// own "image" placeholder affordance.
+const isImagePaste = (atom) =>
+  isPaste(atom) && (atom.image === true || /\.(png|jpe?g|gif|webp)$/i.test(String(atom.text || '').trim()));
 
 // ── atom → text helpers ──────────────────────────────────────────────────────
-const atomDisplay = (a) => (isPaste(a) ? `[pasted ${a.lines} line${a.lines === 1 ? '' : 's'}]` : a);
+const atomDisplay = (a) => {
+  if (!isPaste(a)) return a;
+  if (isImagePaste(a)) return '[image]';
+  return `[pasted ${a.lines} line${a.lines === 1 ? '' : 's'}]`;
+};
 const atomReal = (a) => (isPaste(a) ? a.text : a);
 const displayText = (box) => box.atoms.map(atomDisplay).join('');
 const expandedText = (box) => box.atoms.map(atomReal).join('');

@@ -148,6 +148,9 @@ test('validate accepts well-formed messages', () => {
     // wheel over the mirror → Claude's transcript scroll (negative = up)
     { t: 'ui', id: 'g1', action: { kind: 'scroll', lines: -3 } },
     { t: 'ui', action: { kind: 'scroll', lines: 8 } },
+    // browser image paste/drop
+    { t: 'ui', action: { kind: 'image', mime: 'image/png', data: 'aGVsbG8=' } },
+    { t: 'ui', id: 'g1', action: { kind: 'image', mime: 'image/jpeg', data: 'abc', name: 'shot.jpg', draft: true } },
   ];
   for (const m of good) assert.equal(validate(m), true, JSON.stringify(m));
 });
@@ -202,6 +205,11 @@ test('validate rejects malformed messages', () => {
     { t: 'ui', action: { kind: 'scroll' } }, // scroll needs a line count
     { t: 'ui', action: { kind: 'scroll', lines: 'up' } }, // lines must be a number
     { t: 'ui', action: { kind: 'role', id: 'g2', role: 7 } }, // role must be a string
+    { t: 'ui', action: { kind: 'image' } }, // image needs mime+data
+    { t: 'ui', action: { kind: 'image', mime: 'image/png' } }, // missing data
+    { t: 'ui', action: { kind: 'image', mime: 'image/png', data: '' } }, // empty data
+    { t: 'ui', action: { kind: 'image', mime: 1, data: 'ab' } }, // mime must be string
+    { t: 'ui', action: { kind: 'image', mime: 'image/png', data: 'ab', draft: 'yes' } }, // draft must be bool
   ];
   for (const m of bad) assert.equal(validate(m), false, JSON.stringify(m));
 });

@@ -423,6 +423,16 @@ test('a single-line paste reads "1 line"', () => {
   assert.equal(only(d).text, '[pasted 1 line]');
 });
 
+test('an image-path paste collapses to an [image] chip and expands on send', () => {
+  const d = new Drafts();
+  d.keystroke('ian', 'look: ');
+  d.keystroke('ian', paste('/tmp/claudecollab-1.png'));
+  const box = only(d);
+  assert.equal(box.text, 'look: [image]');
+  const eff = d.keystroke('ian', ENTER);
+  assert.equal(eff.send.text, 'look: /tmp/claudecollab-1.png');
+});
+
 test('the paste token expands to the real text only when sent', () => {
   const d = new Drafts();
   d.keystroke('ian', 'see: ');

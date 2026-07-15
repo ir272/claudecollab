@@ -175,6 +175,63 @@ export function kickAction(id) {
 }
 
 /**
+ * Build a {t:'ui'} image action. `data` is base64 of the raw image bytes (not a
+ * data-URL). Optional `draft:true` forces the path into the sender's compose box
+ * instead of Claude's live input line.
+ * @param {string} mime
+ * @param {string} data  base64
+ * @param {{name?:string, draft?:boolean}} [opts]
+ */
+export function imageAction(mime, data, opts = {}) {
+  const action = { kind: 'image', mime: String(mime || 'image/png'), data: String(data || '') };
+  if (opts.name) action.name = String(opts.name);
+  if (opts.draft === true) action.draft = true;
+  return { t: 'ui', action };
+}
+
+/** First image File on a paste/drop DataTransfer, or null. */
+export function clipboardImageFile(clipboardData) {
+  const cd = clipboardData;
+  if (!cd) return null;
+  const items = cd.items;
+  if (items) {
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind === 'file' && typeof it.type === 'string' && it.type.startsWith('image/')) {
+        const f = it.getAsFile?.();
+        if (f) return f;
+      }
+    }
+  }
+  const files = cd.files;
+  if (files) {
+    for (let i = 0; i < files.length; i++) {
+      if (files[i]?.type?.startsWith('image/')) return files[i];
+    }
+  }
+  return null;
+}
+
+/** Read a File/Blob to an imageAction message. */
+export async function fileToImageAction(file, opts = {}) {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  // btoa needs a binary string. Build in chunks without spreading huge arrays
+  // onto the call stack (images can be several MB).
+  let bin = '';
+  const STEP = 0x8000;
+  for (let i = 0; i < bytes.length; i += STEP) {
+    const slice = bytes.subarray(i, i + STEP);
+    let chunk = '';
+    for (let j = 0; j < slice.length; j++) chunk += String.fromCharCode(slice[j]);
+    bin += chunk;
+  }
+  const mime = file.type || 'image/png';
+  const name = file.name || 'paste.png';
+  return imageAction(mime, btoa(bin), { name, draft: opts.draft === true });
+}
+
+/**
  * The token-free invite link a host copies to share (finding 1). The host tab lives at
  * `<origin>/<code>?host=<token>`; the invite is the same origin + code with the token
  * stripped, so a friend who opens it lands on the normal knock flow — never the host
@@ -496,7 +553,15 @@ function main() {
   let retuneTries = 0; // bounded font-retune attempts while xterm re-measures
   // Direct mode is DERIVED, not toggled: anyone who can type, with no draft
   // focused, types straight into Claude. Updated from every state frame.
+  // `preferWindow` sticks after you click/focus your per-user window until you
+  // explicitly click Claude's terminal — without it, a missed draft caret or a
+  // focus steal onto the invisible composer leaked keystrokes into Claude.
   let directOn = false;
+  let preferWindow = false;
+  // Bridges the state round-trip so we never spawn a second empty box / never
+  // send window keystrokes before the brain confirms our caret (leak → Claude).
+  let draftArmed = false;
+  let pendingWindowKeys = [];
   // Draft placement is SHARED (brain-owned, stage fractions). Client state here is
   // only for interaction smoothness: the box being dragged and the spawn point of
   // a double-clicked draft (mailed as a place action once the box exists).
@@ -1009,11 +1074,28 @@ function main() {
 
   // ── composer (a transparent key/paste catcher; text shows in the draft boxes) ──
   function focusComposer() {
-    if (directOn) return; // keys belong to Claude until the user leaves direct mode
+    if (directOn || preferWindow) return; // window mode owns keys; don't steal back
     const v = lastState ? overlayView(lastState, selfId) : null;
     if (v && v.canCompose && !composer.disabled) composer.focus();
   }
   composer.addEventListener('keydown', (e) => {
+    // Sticky window mode: even if focus landed on the invisible catcher, route into
+    // the per-user draft instead of Claude (the leak the host saw when typing).
+    if (preferWindow) {
+      const bytes = keyToBytes(e);
+      if (bytes != null) {
+        e.preventDefault();
+        if (e.key !== 'Escape') sendWindowKey(bytes);
+        else {
+          preferWindow = false;
+          sendKey(bytes);
+        }
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) return;
+      if (e.key.length === 1) e.preventDefault();
+      return;
+    }
     const bytes = keyToBytes(e); // maps the ⌘ editing chords too, so ask it first
     if (bytes != null) {
       e.preventDefault();
@@ -1032,8 +1114,71 @@ function main() {
   });
   composer.addEventListener('paste', (e) => {
     e.preventDefault();
-    const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
-    if (text) sendKey(pasteBytes(text));
+    void handleComposerPaste(e);
+  });
+  async function handleComposerPaste(e) {
+    const cd = e.clipboardData || window.clipboardData;
+    const file = clipboardImageFile(cd);
+    if (file) {
+      // In a draft → keep the image in the draft. Talking to Claude directly →
+      // host clipboard / path paste into the live input.
+      const intoDraft = preferWindow || (!directOn && !!(lastState && overlayView(lastState, selfId)?.drafts.some((d) => d.focusedBySelf)));
+      try {
+        sendMsg(await fileToImageAction(file, { draft: intoDraft }));
+      } catch {
+        /* ignore a failed File read */
+      }
+      return;
+    }
+    const text = cd?.getData('text') || '';
+    if (text) {
+      if (preferWindow) sendWindowKey(pasteBytes(text));
+      else sendKey(pasteBytes(text));
+    }
+  }
+  // Drop an image onto the terminal stage to attach it (draft when composing, else Claude).
+  stage.addEventListener('dragover', (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  stage.addEventListener('drop', (e) => {
+    const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type?.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    const intoDraft = !directOn;
+    if (intoDraft) ensureMyDraft();
+    void (async () => {
+      for (const f of files.slice(0, 3)) {
+        try {
+          sendMsg(await fileToImageAction(f, { draft: intoDraft }));
+        } catch {
+          /* skip unreadable files */
+        }
+      }
+    })();
+  });
+  // Drop onto the per-user windows always lands in your draft (same as pasting there).
+  panelsGrid.addEventListener('dragover', (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  panelsGrid.addEventListener('drop', (e) => {
+    const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type?.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    ensureMyDraft();
+    void (async () => {
+      for (const f of files.slice(0, 3)) {
+        try {
+          sendMsg(await fileToImageAction(f, { draft: true }));
+        } catch {
+          /* skip */
+        }
+      }
+    })();
   });
   // Direct mode: translate a keydown to the raw bytes Claude's own UI expects —
   // a superset of the draft keymap (Tab, Ctrl+letter) since nothing is off-limits
@@ -1054,6 +1199,9 @@ function main() {
     if (e.target.closest('.fdraft, .user-window')) return;
     // Clicking Claude's terminal means "talk to Claude": leave any draft I'm in
     // (its text lives on) and hand my keys to Claude's live session.
+    preferWindow = false;
+    pendingWindowKeys.length = 0;
+    draftArmed = false;
     const active = document.activeElement;
     if (active?.classList?.contains('uw-input')) active.blur();
     const v = lastState ? overlayView(lastState, selfId) : null;
@@ -1204,11 +1352,12 @@ function main() {
       }
     }
     // Direct-to-Claude: you can prompt, you're not composing in any draft, and your
-    // cursor isn't in a window input → keys go straight into Claude's terminal (so
-    // y/n permission prompts and the like still work, like before).
+    // cursor isn't in a window — AND you haven't sticky-preferred the window. Keys
+    // go straight into Claude's terminal (y/n asks, etc.).
     const selfComposing = v.drafts.some((d) => d.focusedBySelf);
     const inWindow = document.activeElement?.classList?.contains('uw-input');
-    directOn = v.canCompose && !selfComposing && !inWindow;
+    const inPanels = !!document.activeElement?.closest?.('#panels, .user-window');
+    directOn = v.canCompose && !selfComposing && !inWindow && !inPanels && !preferWindow;
     stage.classList.toggle('direct', directOn);
     // Claude is waiting on a permission ask → nudge people to click the terminal to
     // answer, so a stray y/n doesn't get composed into their own window instead.
@@ -1216,10 +1365,10 @@ function main() {
     // While co-writing a FLOATING box, the invisible key-catcher must hold focus so
     // keys land in the shared box (unless a window input owns them).
     const floatingFocused = v.floatingDrafts.some((d) => d.focusedBySelf);
-    if (floatingFocused && !inWindow && !composer.disabled && document.activeElement !== composer) {
+    if (floatingFocused && !inWindow && !inPanels && !preferWindow && !composer.disabled && document.activeElement !== composer) {
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed) composer.focus();
-    } else if (directOn && !composer.disabled && document.activeElement !== composer && !inWindow) {
+    } else if (directOn && !composer.disabled && document.activeElement !== composer && !inWindow && !inPanels) {
       // hand keys to Claude when nothing else owns focus
       const ae = document.activeElement;
       const typingElsewhere = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
@@ -1233,6 +1382,7 @@ function main() {
     renderClaudeChip(v);
     renderPaused(v);
     renderPanels(v);
+    flushPendingWindowKeys(); // draft caret may have just landed in state
     renderDrafts(v);
     renderQueue(v);
     renderComposer(v);
@@ -1346,7 +1496,16 @@ function main() {
         input.autocomplete = 'off';
         input.placeholder = p.isSelf ? 'Type your prompt…' : `${p.name}'s prompt…`;
         input.disabled = !p.canType;
-        if (p.canType) wirePanelInput(input);
+        if (p.canType) {
+          wirePanelInput(input);
+          // Click anywhere in your window (history, header, …) → focus the prompt.
+          // Without this, clicking the history then typing hit the composer/Claude.
+          win.addEventListener('mousedown', (e) => {
+            if (e.target.closest('button, a, input, textarea')) return;
+            preferWindow = true;
+            setTimeout(() => input.focus(), 0);
+          });
+        }
         wrap.append(input);
         win.append(head, body, wrap);
         panelsGrid.append(win);
@@ -1439,19 +1598,19 @@ function main() {
     if (stick) e.body.scrollTop = e.body.scrollHeight;
   }
 
-  // The host routes a prompter's keys straight to Claude whenever they have no
-  // draft box open ("you're at the terminal"). A window input must therefore
-  // GUARANTEE a box exists before its keystrokes land, or the text leaks into
-  // Claude (and is never recorded as that person's turn). After each send the box
-  // is consumed, so we re-arm on the next keystroke. `draftArmed` bridges the state
-  // round-trip so we never spawn a second empty box while the first is in flight.
-  let draftArmed = false;
+  // `draftArmed` / `pendingWindowKeys` live near preferWindow (top of main).
   function myWindowBox(v) {
     const mine = v?.panels.find((p) => p.isSelf);
     if (!mine?.boxId) return null;
     return v.drafts.find((d) => d.id === mine.boxId && !d.place) || null;
   }
+  /** True when my private window draft exists and my caret is in it (state authority). */
+  function windowComposeReady(v = lastState ? overlayView(lastState, selfId) : null) {
+    const box = myWindowBox(v);
+    return !!(box && box.carets.some((c) => c.self));
+  }
   function ensureMyDraft() {
+    preferWindow = true;
     const v = lastState ? overlayView(lastState, selfId) : null;
     const box = myWindowBox(v);
     if (box) {
@@ -1459,26 +1618,58 @@ function main() {
       // keep my caret in my own window box (not a floating box I also co-wrote)
       if (!box.carets.some((c) => c.self)) {
         sendMsg({ t: 'ui', action: { kind: 'caret', id: box.id, offset: box.text.length } });
+        return 'focusing';
       }
-      return;
+      return 'ready';
     }
-    if (draftArmed) return; // already asked for one; it just hasn't echoed back yet
+    if (draftArmed) return 'arming'; // already asked for one; it just hasn't echoed back yet
     sendKey(NEW_DRAFT_BYTES);
     draftArmed = true;
+    return 'arming';
+  }
+  function flushPendingWindowKeys() {
+    if (!pendingWindowKeys.length) return;
+    if (!windowComposeReady()) return;
+    const keys = pendingWindowKeys;
+    pendingWindowKeys = [];
+    draftArmed = false;
+    for (const b of keys) sendKey(b);
+  }
+  /** Send a key into my window draft — buffer until the brain confirms my caret. */
+  function sendWindowKey(bytes) {
+    preferWindow = true;
+    const st = ensureMyDraft();
+    if (st === 'ready') {
+      flushPendingWindowKeys(); // anything queued earlier goes first
+      sendKey(bytes);
+      return;
+    }
+    pendingWindowKeys.push(bytes);
+    // Cap so a wedged room can't grow memory forever; drop the oldest.
+    if (pendingWindowKeys.length > 200) pendingWindowKeys.shift();
   }
 
   // Wire a self window input: keys route to the brain (which owns the draft), so the
   // input is a controlled mirror of my private box. Enter sends it into the queue.
   function wirePanelInput(input) {
-    input.addEventListener('focus', () => ensureMyDraft());
+    input.addEventListener('focus', () => {
+      preferWindow = true;
+      ensureMyDraft();
+    });
     input.addEventListener('keydown', (e) => {
       const bytes = keyToBytes(e); // Enter → send, editing chords, printable chars
       if (bytes != null) {
         e.preventDefault();
-        // Ordered on the wire: the new-draft byte lands before this key, so the key
-        // always composes into my box instead of leaking to Claude.
-        if (e.key !== 'Escape') ensureMyDraft();
-        sendKey(bytes);
+        if (e.key === 'Escape') {
+          preferWindow = false;
+          pendingWindowKeys.length = 0;
+          draftArmed = false;
+          sendKey(bytes);
+          return;
+        }
+        // Ordered on the wire: new-draft / caret land before buffered keys flush,
+        // so characters never leak to Claude while the draft is still arming.
+        sendWindowKey(bytes);
         return;
       }
       if (e.ctrlKey || e.metaKey) return; // browser shortcuts stay native
@@ -1486,12 +1677,24 @@ function main() {
     });
     input.addEventListener('paste', (e) => {
       e.preventDefault();
-      const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
-      if (text) {
-        ensureMyDraft();
-        sendKey(pasteBytes(text));
-      }
+      void handlePanelPaste(e);
     });
+    async function handlePanelPaste(e) {
+      preferWindow = true;
+      const cd = e.clipboardData || window.clipboardData;
+      const file = clipboardImageFile(cd);
+      if (file) {
+        ensureMyDraft();
+        try {
+          sendMsg(await fileToImageAction(file, { draft: true }));
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      const text = cd?.getData('text') || '';
+      if (text) sendWindowKey(pasteBytes(text));
+    }
     // never let a local echo diverge from the brain's authoritative text
     input.addEventListener('input', () => {
       const v = lastState ? overlayView(lastState, selfId) : null;
