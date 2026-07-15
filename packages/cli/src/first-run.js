@@ -40,7 +40,7 @@ const FONT = {
   U: ['█   █', '█   █', '█   █', '█   █', '█████'],
   ' ': ['  ', '  ', '  ', '  ', '  '],
 };
-const GRADIENT = ['255', '252', '249', '246', '243']; // light → dark, like SKILLS
+const GRADIENT = ['223', '216', '215', '214', '208']; // light → deep orange (the band accent family)
 function wordmark(text) {
   const rows = [];
   for (let r = 0; r < 5; r++) {
