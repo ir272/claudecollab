@@ -401,6 +401,11 @@ export function overlayView(state, selfId) {
     queue,
     claudeState: s.claudeState || 'idle',
     claude: claudeLabel(s.claudeState),
+    // What Claude is asking permission for (only present while claudeState==='ask').
+    ask:
+      s.ask && typeof s.ask === 'object'
+        ? { tool: String(s.ask.tool || 'tool'), summary: String(s.ask.summary || '') }
+        : null,
     paused: !!s.paused,
     knocks,
     // The latest addressed notice ({id, msg, seq}) — shown as a toast when it's mine.
@@ -524,6 +529,13 @@ function main() {
   const newDraftBtn = $('#new-draft');
   const hostControls = $('#host-controls');
   const knocksBox = $('#knocks');
+  const askCard = $('#ask-card');
+  const askTool = $('#ask-tool');
+  const askSummary = $('#ask-summary');
+  const askActions = $('#ask-actions');
+  const askApprove = $('#ask-approve');
+  const askDeny = $('#ask-deny');
+  const askViewnote = $('#ask-viewnote');
   const avatarsBox = $('#avatars');
   const popover = $('#popover');
   const copyInviteBtn = $('#copy-invite');
@@ -1099,6 +1111,13 @@ function main() {
     setTimeout(() => composer.focus(), 0); // keys land in the new shared box
   });
 
+  // Approve / Deny a permission ask: exactly the keystrokes a person at the terminal
+  // would press, through the ordinary key channel — no new privileged action, so the
+  // host's role gate (prompter+) applies untouched. Real Claude answers a numbered
+  // select: "1" = Yes, Esc = the "(esc)" No option (see ASK_APPROVE/DENY_BYTES).
+  askApprove.addEventListener('click', () => sendKey(ASK_APPROVE_BYTES));
+  askDeny.addEventListener('click', () => sendKey(ASK_DENY_BYTES));
+
   // ── host controls ────────────────────────────────────────────────────────────
   // Copy the SAFE, token-free invite link — never this tab's own host URL (finding 1).
   copyInviteBtn?.addEventListener('click', async () => {
@@ -1210,6 +1229,7 @@ function main() {
     ghostHint(v);
     applyView(v);
     renderStatusbar(v);
+    renderAsk(v);
     renderClaudeChip(v);
     renderPaused(v);
     renderPanels(v);
@@ -1244,6 +1264,23 @@ function main() {
     const b = el('b', null, v.role);
     b.style.setProperty('--c', v.me?.color || '#9aa4b2');
     sbRole.append(b);
+  }
+
+  // The permission ask card — the touch-first approve/deny surface (all widths, the
+  // one thing a phone most needs). Approve/Deny are ORDINARY keystrokes sent through
+  // the key channel (the host's role gate applies); only people who may type see the
+  // buttons, viewers see the card without them. The old amber pulse stays; its
+  // "click to answer" pill is suppressed while the card is up (see .has-ask-card).
+  function renderAsk(v) {
+    const show = v.claudeState === 'ask' && !!v.ask;
+    askCard.hidden = !show;
+    stage.classList.toggle('has-ask-card', show);
+    if (!show) return;
+    askTool.textContent = v.ask.tool || 'tool';
+    askSummary.textContent = v.ask.summary || '';
+    askSummary.hidden = !v.ask.summary;
+    askActions.hidden = !v.canCompose; // buttons only for prompter+ (role gate mirrors this)
+    askViewnote.hidden = v.canCompose; // viewers see the card, but no buttons
   }
 
   function renderClaudeChip(v) {
