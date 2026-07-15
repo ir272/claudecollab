@@ -92,8 +92,7 @@ export function runFirstRun({ input = process.stdin, output = process.stdout, co
       '',
       ...rows,
       '',
-      `  ${d('collaborations run through our free server (claudecollab.org).')}`,
-      `  ${d('want to run your own? `collab relay` (guide in the README).')} ${o('♥')}`,
+      `  ${d('want your own server? `collab relay` (guide in the README).')} ${o('♥')}`,
       '',
       `  ${chip('↑↓')} ${d('move ·')} ${chip('space')} ${d('toggle ·')} ${chip('enter')} ${d('start claude')}`,
     ];

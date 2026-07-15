@@ -29,8 +29,8 @@ test('renders the approved copy — wordmark, core line, Slack row, relay footer
   assert.ok(screen.includes('Select Claude’s connectors:'.replace('’', "'")), 'the connector prompt');
   assert.ok(screen.includes('Slack     DM the join link to a teammate'), 'the Slack connector row');
   assert.ok(!screen.includes('Gmail') && !screen.includes('Discord'), 'Slack only for now');
-  assert.ok(screen.includes('collaborations run through our free server (claudecollab.org).'), 'the relay line');
-  assert.ok(screen.includes('(guide in the README). ♥'), 'the ♥ rides the README line');
+  assert.ok(screen.includes('want your own server? `collab relay` (guide in the README). ♥'), 'the server line, verbatim');
+  assert.ok(!screen.includes('collaborations run through'), 'the free-server line is gone');
   assert.ok(!screen.includes('please consider donating'), 'the donate line is gone');
   assert.ok(screen.includes('↑↓ move · space toggle · enter start claude'), 'the key hints');
 });
