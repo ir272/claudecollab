@@ -33,6 +33,8 @@ import {
   roleAction,
   kickAction,
   inviteLink,
+  ASK_APPROVE_BYTES,
+  ASK_DENY_BYTES,
 } from './client.js';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -243,6 +245,27 @@ test('overlayView: the full view model, self excluded from cursors', () => {
   assert.equal(empty.isViewer, true);
   assert.deepEqual(empty.drafts, []);
   assert.deepEqual(empty.othersPointers, []);
+});
+
+test('overlayView surfaces the ask context only as a clean {tool, summary}', () => {
+  const base = {
+    participants: [{ id: 'g1', name: 'sid', role: 'prompter', color: '#0091ff' }],
+    drafts: { boxes: [] },
+  };
+  const asking = overlayView({ ...base, claudeState: 'ask', ask: { tool: 'Bash', summary: 'rm -rf /tmp/x' } }, 'g1');
+  assert.deepEqual(asking.ask, { tool: 'Bash', summary: 'rm -rf /tmp/x' });
+  // No ask field → null (the card stays hidden).
+  assert.equal(overlayView({ ...base, claudeState: 'idle' }, 'g1').ask, null);
+  // A junk ask value never crashes the view model.
+  assert.equal(overlayView({ ...base, claudeState: 'ask', ask: 'nope' }, 'g1').ask, null);
+});
+
+test('the ask-answer bytes are safe: approve = "1", deny = Esc (never "2")', () => {
+  // Real Claude v2 answers a numbered select: option 1 is Yes, Esc is the "(esc)" No.
+  // "2" is "Yes, and don't ask again" — an APPROVE variant, so it must NOT be deny.
+  assert.equal(ASK_APPROVE_BYTES, '1');
+  assert.equal(ASK_DENY_BYTES, '\x1b');
+  assert.notEqual(ASK_DENY_BYTES, '2', 'deny must never send an approve-and-remember key');
 });
 
 test('overlayView: turn history attaches to each author’s panel (who typed what + response)', () => {

@@ -11,9 +11,11 @@
 //
 // It is deterministic and marker-driven:
 //   • a prompt containing "[ask]" → UserPromptSubmit (busy), a PostToolUse, then a
-//     permission_prompt Notification (arms the gate); it stays pending until a y/n
+//     permission_prompt Notification (arms the gate); it stays pending until an
 //     answer arrives, then fires Stop (idle).
-//   • a lone y / n while pending  → resolves the ask → Stop (idle).
+//   • a lone answer key while pending → resolves the ask → Stop (idle). Accepts BOTH
+//     conventions: real Claude's numbered select ("1" = Yes; "2"/"3"/Esc = No) and
+//     the legacy y / n, so the browser ask card's real keystrokes drive it too.
 //   • any other prompt            → UserPromptSubmit (busy) → Stop (idle).
 //
 // Hooks are fired STRICTLY IN ORDER (each injected command runs to completion,
@@ -112,7 +114,28 @@ let pendingAsk = false;
 let buf = '';
 let chain = Promise.resolve(); // serialize processing so hooks never interleave
 
+// Opt-in raw-input log (a verification aid; inert unless the env var is set): every
+// byte this stub receives on stdin is appended, so a test can assert exactly which
+// keystroke the browser's Approve/Deny button put on the wire.
+const rxLog = process.env.CLAUDE_SHARE_FAKE_RXLOG;
+
+// Classify a lone answer keystroke: real Claude's numbered select ("1" = Yes; "2"/
+// "3" = the other options; Esc = the "(esc)" No), plus the legacy y / n. Returns
+// 'yes' | 'no' | null.
+function answerKey(s) {
+  if (/^[y1]$/i.test(s)) return 'yes';
+  if (/^[n23]$/i.test(s) || s === '\x1b') return 'no';
+  return null;
+}
+
 process.stdin.on('data', (chunk) => {
+  if (rxLog) {
+    try {
+      fs.appendFileSync(rxLog, chunk);
+    } catch {
+      /* best-effort */
+    }
+  }
   buf += chunk;
   // Drain every complete line (terminated by \r or \n).
   let idx;
@@ -121,8 +144,8 @@ process.stdin.on('data', (chunk) => {
     buf = buf.slice(idx + 1);
     if (line !== '') enqueue(() => processInput(line));
   }
-  // A permission answer is a lone y/n with no newline.
-  if (pendingAsk && /^[yn]$/i.test(buf)) {
+  // A permission answer is a lone answer key with no newline.
+  if (pendingAsk && answerKey(buf)) {
     const ans = buf;
     buf = '';
     enqueue(() => processAnswer(ans));
@@ -134,7 +157,7 @@ function enqueue(step) {
 }
 
 async function processInput(line) {
-  if (pendingAsk && /^[yn]$/i.test(line)) return processAnswer(line);
+  if (pendingAsk && answerKey(line)) return processAnswer(line);
   tScribe('user', line);
   await fire('UserPromptSubmit', { permission_mode: 'default', prompt: line });
   say(`[claude] prompt: ${line}`);
@@ -152,7 +175,7 @@ async function processInput(line) {
 
 async function processAnswer(ans) {
   pendingAsk = false;
-  const granted = /y/i.test(ans);
+  const granted = answerKey(ans) === 'yes';
   say(`[claude] permission ${granted ? 'granted' : 'denied'}`);
   tScribe('assistant', granted ? 'Permission granted — change applied.' : 'Permission denied — no change made.');
   await fire('Stop', { transcript_path: transcriptPath });
