@@ -32,6 +32,7 @@ Run these with Bash. Each prints human-readable lines you can quote to the user.
 
 When the user asks you to send or DM the invite, first make sure sharing is on (run `collab go` if it is not), then look for a messaging tool available in this session (Slack, Gmail, or another connector) and send "Join my collab! <invite link>" to the person they named. If no connector is available, show them the link instead.
 
-## The one hard rule
+## The two hard rules
 
-The invite link is the ONLY thing that is safe to share. Never send, quote, or paste anything containing `host=`. That is the host's private control link, and opening it hands full control of the session to whoever has it. The `inviteUrl` from the room file and the link that `collab go` prints are always safe.
+1. The invite link is the ONLY thing that is safe to share. Never send, quote, or paste anything containing `host=`. That is the host's private control link, and opening it hands full control of the session to whoever has it. The `inviteUrl` from the room file and the link that `collab go` prints are always safe.
+2. If `collab go` is refused (a secret or relay error), STOP and explain — the user must export `CLAUDE_SHARE_SECRET` in their shell profile and reopen the session. Never search files for secrets, never read or eval shell profiles, never retry with scraped credentials.

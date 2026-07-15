@@ -1147,7 +1147,17 @@ async function main() {
       if (reason === 'secret') msg = 'relay requires a room secret — set CLAUDE_SHARE_SECRET (or --secret) and restart. running solo';
       else if (reason === 'version') msg = 'relay speaks a newer protocol — update with: npm update -g @claudecollab/cli. running solo';
       else msg = `relay refused the connection (${reason}) — running solo`;
+      // A refusal means sharing never began — after the explanatory toast has had
+      // its 15s on the band, return the session to fully invisible (band gone, the
+      // child reclaims the row) instead of sticking a dead live-band on a solo
+      // session. goLiveStarted resets so a later `go` (fixed secret) can redial.
       showToast(msg, 15000);
+      const invis = setTimeout(() => {
+        wantLive = false;
+        goLiveStarted = false;
+        repaintBand();
+      }, 15000);
+      invis.unref?.();
       repaintBand();
     });
     r.onKnock((knock) => {

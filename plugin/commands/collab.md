@@ -36,6 +36,7 @@ If the user named a teammate with `@name`, look through the messaging tools avai
 
 If `$ARGUMENTS` is `off`, run `collab off` and tell the user sharing stopped. If it is `status`, run `collab status` and report whether the session is live and its invite link.
 
-## The one hard rule
+## The two hard rules
 
-Only ever share the invite link that `collab go` prints. Never share anything containing `host=`: that is the host's own control link, and opening it hands control of the session to whoever has it.
+1. Only ever share the invite link that `collab go` prints. Never share anything containing `host=`: that is the host's own control link, and opening it hands control of the session to whoever has it.
+2. If `collab go` fails with a secret or refusal error (for example "relay requires a room secret"), STOP and explain. Tell the user: the relay needs `CLAUDE_SHARE_SECRET` exported in their shell before `collab` starts — add it to their shell profile and reopen the session. Do NOT search files for secrets, do NOT read or eval shell profiles, do NOT retry with scraped credentials. Environment problems are the user's to fix, in their own shell.
