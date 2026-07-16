@@ -1,0 +1,15 @@
+{
+  "name": "demo-video",
+  "private": true,
+  "description": "Remotion project for the claudecollab demo video (not part of the published package)",
+  "scripts": {
+    "start": "remotion studio",
+    "render": "remotion render Master out/claudecollab-demo-final.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "^4.0.0"
+  }
+}

@@ -1,6 +1,9 @@
 node_modules/
 rust/target/
 mockup/out/
+video/out/
+video/public/
+claudecollab-demo.mp4
 spike/spike_host_key*
 spike/*.log
 .DS_Store
