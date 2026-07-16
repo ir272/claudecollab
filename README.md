@@ -2,6 +2,8 @@
 
 **Use Claude Code with your friends.** You run one command. Your friends open a link and can collaborate with the same Claude as you.
 
+https://github.com/user-attachments/assets/08630bf5-ab07-47f4-b1af-eb0566d64296
+
 ```
    You                 a helper server            Your friends
 (you run Claude)  <-->  (passes messages)   <-->  (open a link)
