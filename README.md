@@ -1,5 +1,8 @@
 # ✦ claudecollab
 
+[![views](https://hits.sh/github.com/ir272/claudecollab.svg?label=views&color=ff9333)](https://hits.sh/github.com/ir272/claudecollab/)
+[![npm](https://img.shields.io/npm/v/%40claudecollab%2Fcli?color=cb3837)](https://www.npmjs.com/package/@claudecollab/cli)
+
 **Use Claude Code with your friends.** You run one command. Your friends open a link and can collaborate with the same Claude as you.
 
 https://github.com/user-attachments/assets/08630bf5-ab07-47f4-b1af-eb0566d64296
